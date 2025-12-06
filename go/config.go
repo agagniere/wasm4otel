@@ -3,7 +3,11 @@ package wasm4otel
 // Credit: https://github.com/otelwasm/otelwasm/blob/main/wasmplugin/config.go
 // License: Apache License 2.0
 
-import "fmt"
+import (
+	"fmt"
+
+	"go.opentelemetry.io/collector/component"
+)
 
 // PluginConfig is a generic configuration type that can be passed to WASM modules
 type PluginConfig map[string]interface{}
@@ -23,4 +27,10 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("path is required")
 	}
 	return nil
+}
+
+func DefaultConfig() component.Config {
+	return Config{
+		Path: "",
+	}
 }
