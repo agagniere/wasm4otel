@@ -1,7 +1,7 @@
 package wasm4otel
 
 import (
-	"context"
+	std_context "context"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -29,7 +29,7 @@ func NewFactory() receiver.Factory {
 }
 
 func createLogs(
-	ctx context.Context,
+	context std_context.Context,
 	settings receiver.Settings,
 	anyconfig component.Config,
 	nextConsumer consumer.Logs,
@@ -38,11 +38,15 @@ func createLogs(
 	logger.Infow("Instanciate logs exporter",
 		"ID", settings.ID,
 		"build info", settings.BuildInfo)
-	config := anyconfig.(*Config)
+	config := anyconfig.(Config)
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	context, cancel := std_context.WithCancel(std_context.Background())
 	return &WasmOtelLogsReceiver{
-		logger: logger,
+		logger:  logger,
+		sink:    nextConsumer,
+		context: context,
+		cancel:  cancel,
 	}, nil
 }
