@@ -19,7 +19,7 @@ import (
 // - CreateDefaultConfig   // from component.Factory
 //
 // But it cannot be implemented outside of the receiver package, because it also requires
-// an unexported method, to force us to use NewFactory
+// an unexported method, to force us to use receiver.NewFactory
 func NewFactory() receiver.Factory {
 	return receiver.NewFactory(
 		component.MustNewType("wasm4otel"),
@@ -31,8 +31,18 @@ func NewFactory() receiver.Factory {
 func createLogs(
 	ctx context.Context,
 	settings receiver.Settings,
-	config component.Config,
+	anyconfig component.Config,
 	nextConsumer consumer.Logs,
 ) (receiver.Logs, error) {
-	return &WasmOtelLogsReceiver{}, nil
+	logger := settings.Logger.Sugar()
+	logger.Infow("Instanciate logs exporter",
+		"ID", settings.ID,
+		"build info", settings.BuildInfo)
+	config := anyconfig.(*Config)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	return &WasmOtelLogsReceiver{
+		logger: logger,
+	}, nil
 }
