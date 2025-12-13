@@ -3,9 +3,9 @@ package wasm4otel
 import (
 	std_context "context"
 
-	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/receiver"
+	otel_component "go.opentelemetry.io/collector/component"
+	otel_consumer "go.opentelemetry.io/collector/consumer"
+	otel_receiver "go.opentelemetry.io/collector/receiver"
 )
 
 // The receiver.Factory interface requires the following methods:
@@ -20,20 +20,20 @@ import (
 //
 // But it cannot be implemented outside of the receiver package, because it also requires
 // an unexported method, to force us to use receiver.NewFactory
-func NewFactory() receiver.Factory {
-	return receiver.NewFactory(
-		component.MustNewType("wasm4otel"),
+func NewFactory() otel_receiver.Factory {
+	return otel_receiver.NewFactory(
+		otel_component.MustNewType("wasm4otel"),
 		DefaultConfig,
-		receiver.WithLogs(createLogs, component.StabilityLevelDevelopment),
+		otel_receiver.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
 	)
 }
 
 func createLogs(
 	context std_context.Context,
-	settings receiver.Settings,
-	anyconfig component.Config,
-	nextConsumer consumer.Logs,
-) (receiver.Logs, error) {
+	settings otel_receiver.Settings,
+	anyconfig otel_component.Config,
+	nextConsumer otel_consumer.Logs,
+) (otel_receiver.Logs, error) {
 	logger := settings.Logger.Sugar()
 	logger.Infow("Instanciate logs exporter",
 		"ID", settings.ID,
@@ -48,5 +48,6 @@ func createLogs(
 		sink:    nextConsumer,
 		context: context,
 		cancel:  cancel,
+		config:  config,
 	}, nil
 }

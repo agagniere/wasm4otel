@@ -10,6 +10,10 @@ import (
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_data "go.opentelemetry.io/collector/pdata/pcommon"
 	otel_log "go.opentelemetry.io/collector/pdata/plog"
+
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	wazero_sys "github.com/tetratelabs/wazero/sys"
 )
 
 type WasmOtelLogsReceiver struct {
@@ -17,6 +21,7 @@ type WasmOtelLogsReceiver struct {
 	sink    otel_consumer.Logs
 	context std_context.Context
 	cancel  std_context.CancelFunc
+	config  Config
 }
 
 func (self *WasmOtelLogsReceiver) Start(context std_context.Context, host otel_component.Host) error {
