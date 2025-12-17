@@ -29,10 +29,9 @@ func NewWasmOtelComponent(
 	context std_context.Context,
 	anyconfig otel_component.Config,
 	logger *uber_zap.Logger,
-	identifier otel_component.ID,
 ) (WasmOtelComponent, error) {
 	hostLogger := logger.Sugar()
-	hostLogger.Infow("Instanciate WebAssembly component", "ID", identifier)
+	hostLogger.Infow("Instanciate WebAssembly component")
 
 	config := anyconfig.(Config)
 	if err := config.Validate(); err != nil {
@@ -42,12 +41,26 @@ func NewWasmOtelComponent(
 	runtime := newRuntime(context)
 	return WasmOtelComponent{
 		logger:      hostLogger,
-		guestLogger: hostLogger.Named(identifier.String()),
 		context:     context,
 		cancel:      cancel,
 		config:      config,
 		runtime:     runtime,
 	}, nil
+}
+
+func newRuntime(context std_context.Context) wazero.Runtime {
+    runtime := wazero.NewRuntimeWithConfig(context, wazero.NewRuntimeConfigInterpreter())
+    //wasi_snapshot_preview1.MustInstantiate(context, runtime)
+    return runtime
+}
+
+// Provide a callback accessible from the guest to log
+func (self *WasmOtelComponent) allowLoggingFromGuest() error {
+	self.guestLogger = self.logger.With("plugin", self.config.Path)
+	_, err := self.runtime.NewHostModuleBuilder("env").
+		NewFunctionBuilder().WithFunc(self.logToZap).Export("host_log").
+		Instantiate(self.context)
+	return err
 }
 
 func (self *WasmOtelComponent) Start(context std_context.Context, host otel_component.Host) error {
@@ -63,20 +76,13 @@ func (self *WasmOtelComponent) Shutdown(ctx std_context.Context) error {
 func (self *WasmOtelComponent) logToZap(_ std_context.Context, module wazero_api.Module, level int32, offset uint32, size uint32) {
 	buffer, ok := module.Memory().Read(offset, size)
 	if !ok {
-		self.logger.Errorf("Unable to read (%d, %d) from memory", offset, size)
+		self.guestLogger.Errorf("Unable to read (%d, %d) from memory", offset, size)
 		return
 	}
 	self.guestLogger.Log(uber_zapcore.Level(level), string(buffer))
 }
 
 func (self *WasmOtelComponent) startRuntime() error {
-	_, err := self.runtime.NewHostModuleBuilder("env").
-		NewFunctionBuilder().WithFunc(self.logToZap).Export("host_log").
-		Instantiate(self.context)
-	if err != nil {
-		self.logger.Errorw("Unable to instanciate host module",
-			"error", err)
-	}
 
 	plugin, err := std_os.Open(self.config.Path)
 	if err != nil {

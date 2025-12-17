@@ -3,6 +3,7 @@ module github.com/agagniere/wasm4otel
 go 1.24.0
 
 require (
+	github.com/tetratelabs/wazero v1.10.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/consumer v1.47.0
 	go.opentelemetry.io/collector/pdata v1.47.0

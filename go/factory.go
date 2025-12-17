@@ -34,12 +34,16 @@ func createLogs(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_receiver.Logs, error) {
-	component, err := NewWasmOtelComponent(context, anyconfig, settings.Logger, settings.ID)
+	component, err := NewWasmOtelComponent(context, anyconfig, settings.Logger)
 	if err != nil {
 		return nil, err
 	}
-	return &WasmOtelLogsReceiver{
+	receiver := &WasmOtelLogsReceiver{
 		WasmOtelComponent: component,
 		sink:  nextConsumer,
-	}, nil
+	}
+	if err = receiver.allowLoggingFromGuest() ; err != nil {
+		return nil, err
+	}
+	return receiver, nil
 }

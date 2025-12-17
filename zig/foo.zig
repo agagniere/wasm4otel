@@ -24,6 +24,7 @@ export fn start() bool {
     return true;
 }
 
-export fn receiveLogs() bool {
+export fn stop() bool {
+    std.log.warn("So long", .{});
     return true;
 }
