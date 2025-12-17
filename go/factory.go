@@ -38,12 +38,11 @@ func createLogs(
 	if err != nil {
 		return nil, err
 	}
-	receiver := &WasmOtelLogsReceiver{
-		WasmOtelComponent: component,
-		sink:  nextConsumer,
-	}
-	if err = receiver.allowLoggingFromGuest() ; err != nil {
+	if err = component.ExposeFunctionsToGuest(); err != nil {
 		return nil, err
 	}
-	return receiver, nil
+	if err = component.LoadPlugin(); err != nil {
+		return nil, err
+	}
+	return &component, nil
 }
