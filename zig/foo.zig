@@ -7,7 +7,7 @@ pub const std_options: std.Options = .{
 };
 
 /// Use to produce log batches to the next consumer in the OTel pipeline
-extern fn push_logs(ptr: [*]const u8, size: usize) bool;
+extern fn push_logs(ptr: [*]const u8, size: usize) i32;
 
 comptime {
     @export(&init, .{ .name = "_initialize" });
@@ -21,6 +21,7 @@ export fn start() bool {
         builtin.abi,
         builtin.wasi_exec_model,
     });
+    _ = push_logs(&.{}, 0);
     return true;
 }
 

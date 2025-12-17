@@ -81,23 +81,25 @@ func (self *WasmOtelComponent) outboundLogs(
 	module wazero_api.Module,
 	offset uint32,
 	size uint32,
-) {
+) uint32 {
 	buffer, ok := module.Memory().Read(offset, size)
 	if !ok {
 		self.guestLogger.Errorf("Unable to read (%d, %d) from memory", offset, size)
-		return
+		return 1
 	}
 	deserializer := otel_logs.ProtoUnmarshaler{}
 	logs, err := deserializer.UnmarshalLogs(buffer)
 	if err != nil {
 		self.guestLogger.Errorw("Unable to deserialize logs", "size", size)
-		return
+		return 2
 	}
 	if self.nextConsumerLogs == nil {
 		self.guestLogger.Error("Plugin is pushing logs to a dead-end")
-		return
+		return 3
 	}
 	self.nextConsumerLogs.ConsumeLogs(self.context, logs)
+	self.guestLogger.Infow("OK", "bytes", size)
+	return 0
 }
 
 func (self *WasmOtelComponent) Start(context std_context.Context, host otel_component.Host) error {

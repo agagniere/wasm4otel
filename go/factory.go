@@ -44,5 +44,6 @@ func createLogs(
 	if err = component.LoadPlugin(); err != nil {
 		return nil, err
 	}
+	component.nextConsumerLogs = nextConsumer
 	return &component, nil
 }
