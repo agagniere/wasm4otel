@@ -1,0 +1,25 @@
+.{
+    .name = .zotel,
+    .version = "0.0.0",
+    .fingerprint = 0x19739a3b1dfa9749,
+    .minimum_zig_version = "0.16.0",
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "freestanding",
+        "wasip1",
+    },
+
+    .dependencies = .{
+        .protobuf = .{
+            .url = "git+https://github.com/Arwalk/zig-protobuf?ref=zig-master#e4aea60be58c72e9a0fbd44937f0240e56448f46",
+            .hash = "protobuf-3.0.0-0e82akfSKABCsW_esyKji79iHBDz4r2b_-id5fDBC8fW",
+        },
+        .otelproto = .{
+            .url = "git+https://github.com/open-telemetry/opentelemetry-proto?ref=v1.9.0#a8951735f7801e8adfaec5c0ace9262771cfec6e",
+            .hash = "N-V-__8AAOuRBABBd0ZyohQ4x_ZiMz8XKAoqth7hWzHYZSaC",
+        },
+    },
+}
