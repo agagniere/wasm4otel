@@ -16,7 +16,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	wazero_api "github.com/tetratelabs/wazero/api"
 	wazero_sys "github.com/tetratelabs/wazero/sys"
-	//"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
 type WasmOtelComponent struct {
@@ -28,6 +28,7 @@ type WasmOtelComponent struct {
 	runtime          wazero.Runtime
 	start            wazero_api.Function
 	stop             wazero_api.Function
+
 	capabilities     wazero_api.Function
 	consumeLogs      wazero_api.Function
 	consumeMetrics   wazero_api.Function
@@ -59,7 +60,7 @@ func NewWasmOtelComponent(
 
 func newRuntime(context std_context.Context) wazero.Runtime {
 	runtime := wazero.NewRuntimeWithConfig(context, wazero.NewRuntimeConfigInterpreter())
-	//wasi_snapshot_preview1.MustInstantiate(context, runtime)
+	wasi_snapshot_preview1.MustInstantiate(context, runtime)
 	return runtime
 }
 
@@ -110,7 +111,7 @@ func (self *WasmOtelComponent) Start(context std_context.Context, host otel_comp
 }
 
 func (self *WasmOtelComponent) Shutdown(context std_context.Context) error {
-	if self.start != nil {
+	if self.stop != nil {
 		self.stop.Call(context)
 	}
 	self.cancel()
@@ -162,6 +163,7 @@ func (self *WasmOtelComponent) LoadPlugin() error {
 
 	self.start = instance.ExportedFunction("start")
 	self.stop = instance.ExportedFunction("stop")
+
 	self.capabilities = instance.ExportedFunction("capabilities")
 	self.consumeLogs = instance.ExportedFunction("consume_logs")
 	self.consumeMetrics = instance.ExportedFunction("consume_metrics")

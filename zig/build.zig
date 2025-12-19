@@ -54,7 +54,10 @@ pub fn build(b: *std.Build) !void {
 
     // Common modules
     const hostLog = b.addModule("hostlog", .{ .root_source_file = b.path("src/log.zig") });
-    const otelData = b.addModule("otel_pipeline_data", .{ .root_source_file = b.path("src/pipeline.zig") });
+    const otelData = b.addModule("otel_pipeline_data", .{
+        .root_source_file = b.path("src/pipeline.zig"),
+        .imports = &.{.{ .name = "protobuf", .module = protobuf_module }},
+    });
 
     for (freestanding_sources) |source| {
         var mod = b.createModule(.{
@@ -62,7 +65,6 @@ pub fn build(b: *std.Build) !void {
             .target = freestanding,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "protobuf", .module = protobuf_module },
                 .{ .name = "hostlog", .module = hostLog },
             },
         });
@@ -82,7 +84,6 @@ pub fn build(b: *std.Build) !void {
             .target = wasip1,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "protobuf", .module = protobuf_module },
                 .{ .name = "hostlog", .module = hostLog },
                 .{ .name = "otel_pipeline_data", .module = otelData },
             },
