@@ -85,8 +85,8 @@ fn generateLogs(alloc: Allocator, io: Io) !LogsBatch {
     logs_from_instance.scope = .{ .name = location.fn_name, .version = build_info.version };
     try logs_from_instance.scope.?.attributes.append(alloc, .{ .key = "file", .value = .{ .value = .{ .string_value = location.file } } });
 
-    for (0..10) |i| {
-        const now = try std.Io.Clock.real.now(io);
+    for (0..6) |i| {
+        const now = std.Io.Clock.now(.real, io);
         const log: otelData.Logs.LogRecord = .{
             .time_unix_nano = @intCast(now.toNanoseconds()),
             .severity_number = @enumFromInt((i % 6) * 4 + 1),
