@@ -39,15 +39,15 @@ pub fn build(b: *std.Build) !void {
         // out directory for the generated zig files
         .destination_directory = b.path("src"),
         .source_files = &.{
-            otelproto.path("opentelemetry/proto/logs/v1/logs.proto").getPath(b),
-            otelproto.path("opentelemetry/proto/metrics/v1/metrics.proto").getPath(b),
-            otelproto.path("opentelemetry/proto/trace/v1/trace.proto").getPath(b),
+            otelproto.path("opentelemetry/proto/logs/v1/logs.proto"),
+            otelproto.path("opentelemetry/proto/metrics/v1/metrics.proto"),
+            otelproto.path("opentelemetry/proto/trace/v1/trace.proto"),
             // automatically imported:
-            //otelproto.path("opentelemetry/proto/common/v1/common.proto").getPath(b),
-            //otelproto.path("opentelemetry/proto/resource/v1/resource.proto").getPath(b),
+            //otelproto.path("opentelemetry/proto/common/v1/common.proto"),
+            //otelproto.path("opentelemetry/proto/resource/v1/resource.proto"),
         },
         .include_directories = &.{
-            otelproto.path("").getPath(b),
+            otelproto.path(""),
         },
     });
     gen_proto.dependOn(&run_protoc.step);
