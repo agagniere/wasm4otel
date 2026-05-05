@@ -1,0 +1,109 @@
+# wazero — what we get from the host runtime
+
+[wazero](https://github.com/tetratelabs/wazero) is the wasm runtime
+embedded by `wasm4otel`'s Go side. It's the only major pure-Go wasm
+runtime, which is why it fits a collector receiver: no cgo, no
+platform-specific build steps, no shared library to ship.
+
+This file covers which wasm features wazero implements, and how that
+constrains the `.wasm` modules a collector can load. For the master
+list of WASM proposals see [`../WASM.md`](../WASM.md); for WASI
+revisions see [`../WASI.md`](../WASI.md).
+
+## Runtime modes
+
+wazero has two execution backends:
+
+- **Interpreter** — pure Go, runs everywhere Go runs.
+- **Compiler** — JIT-style ahead-of-time compilation to native code.
+  Available on `linux/darwin/windows` × `amd64/arm64`.
+
+`wasm4otel` currently uses the interpreter (see
+[`go/README.md`](README.md) for the rationale and how to switch).
+Both backends implement the same feature set; the choice is purely
+performance vs portability.
+
+## Core feature support
+
+Source of truth: [`api/features.go`](https://github.com/tetratelabs/wazero/blob/main/api/features.go)
+and [`experimental/features.go`](https://github.com/tetratelabs/wazero/blob/main/experimental/features.go).
+
+### Bundled in `CoreFeaturesV1` (default) — WASM 1.0
+
+| Proposal           | wazero constant              | Wasmtime |
+| ------------------ | ---------------------------- | -------- |
+| `mutable-globals`  | `CoreFeatureMutableGlobal`   | T1       |
+
+### Bundled in `CoreFeaturesV2` (default) — adds WASM 2.0
+
+| Proposal                  | wazero constant                              | Wasmtime |
+| ------------------------- | -------------------------------------------- | -------- |
+| `bulk-memory-operations`  | `CoreFeatureBulkMemoryOperations`            | T1       |
+| `multi-value`             | `CoreFeatureMultiValue`                      | T1       |
+| `nontrapping-fptoint`     | `CoreFeatureNonTrappingFloatToIntConversion` | T1       |
+| `reference-types`         | `CoreFeatureReferenceTypes`                  | T1       |
+| `sign-extension-ops`      | `CoreFeatureSignExtensionOps`                | T1       |
+| `simd` (simd128)          | `CoreFeatureSIMD`                            | T1       |
+
+`CoreFeaturesV2` is the default in `RuntimeConfig.WithCoreFeatures` and
+is what `wasm_otel_component.go` ends up with implicitly.
+
+### Experimental (off by default)
+
+Available via the `experimental` package, opt-in by OR-ing into
+`RuntimeConfig.WithCoreFeatures`:
+
+| Proposal             | wazero constant                | Wasmtime | Notes                                                                |
+| -------------------- | ------------------------------ | -------- | -------------------------------------------------------------------- |
+| `tail-call`          | `CoreFeaturesTailCall`         | T1       | —                                                                    |
+| `extended-const`     | `CoreFeaturesExtendedConst`    | T1       | Arithmetic + global refs in const exprs.                             |
+| `threads`            | `CoreFeaturesThreads`          | T2       | Atomics implemented for guest-only; systems without mmap pre-allocate to max memory. |
+| `exception-handling` | `CoreFeaturesExceptionHandling` | T2       | —                                                                    |
+
+### Not implemented
+
+Anything not in the two tables above. Notably absent versus Wasmtime:
+`relaxed-simd`, `multi-memory`, `memory64`, `gc`, `function-references`,
+`custom-page-sizes`, `wide-arithmetic`, `stack-switching`, the entire
+**component model**.
+
+The component-model gap is the load-bearing one for this project's
+roadmap: until wazero implements it, switching `wasm4otel` to a
+WIT-defined ABI means swapping the runtime.
+
+## WASI support
+
+| Revision     | wazero | Notes                                                       |
+| ------------ | ------ | ----------------------------------------------------------- |
+| Preview 0    | ❌     | Historical, intentionally not supported.                    |
+| **Preview 1** | ✅     | Full implementation in `imports/wasi_snapshot_preview1`.    |
+| Preview 2    | ❌     | Requires component model (see above).                       |
+| Preview 3    | ❌     | Requires component model + async.                           |
+
+A handful of preview1 functions are tracked as in-progress; the
+matrix on [wazero.io/specs](https://wazero.io/specs/) is authoritative.
+
+## What this means for `wasm4otel` plugins
+
+The features a plugin can rely on, in practice:
+
+1. Anything in `CoreFeaturesV2` (i.e. WASM 2.0 minus relaxed-simd).
+2. WASI Preview 1, including reactor mode (`_initialize`).
+3. Optionally, threads/tail-call/extended-const/exception-handling
+   *if* `wasm_otel_component.go` opts them in via
+   `wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(...)`.
+   It does not today.
+
+Things to **not** rely on in plugins:
+
+- Component model, WIT bindings — would need a different runtime.
+- Multi-memory, memory64, GC, function references, relaxed-simd.
+- Anything Tier 3+ in Wasmtime — wazero hasn't caught up.
+
+## Bumping wazero
+
+The wazero v1.10.x → v1.11.0 bump in this repo did **not** unlock
+new wasm proposals; v1.11.0's notable changes are bug fixes,
+requiring Go 1.24+, and tightening platform support via
+`golang.org/x/sys`. Future minor bumps may add experimental flags —
+re-check `experimental/features.go` after bumping.
