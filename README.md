@@ -151,6 +151,26 @@ In any wasm-capable language:
 The Zig examples in `zig/freestanding/` and `zig/wasip1/` are intended
 to be readable templates.
 
+## Reference docs
+
+For a refresher on the underlying tech:
+
+- [`WASM.md`](WASM.md) — WebAssembly spec versions, the proposal
+  lifecycle, and a master table of proposals with Wasmtime tier.
+- [`WASI.md`](WASI.md) — WASI revisions (Preview 0 → 3), the
+  component-model worlds, and how to pick a target.
+
+For what each side of *this* project supports:
+
+- [`go/README.md`](go/README.md) — host package: public API, config,
+  lifecycle, host imports / guest exports.
+- [`go/WAZERO.md`](go/WAZERO.md) — wazero's feature matrix and what
+  it means for plugins this collector can load.
+- [`zig/README.md`](zig/README.md) — Zig build system, shared
+  modules, conventions for adding a plugin.
+- [`zig/WASM.md`](zig/WASM.md) — Zig's wasm targets, feature flags,
+  CPU models, and cross-check against wazero.
+
 ## Roadmap
 
 - Wire `push_metrics` / `push_traces` on the host side.

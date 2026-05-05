@@ -7,8 +7,8 @@ actually accepts see [`../go/WAZERO.md`](../go/WAZERO.md).
 
 Authoritative sources in the Zig tree:
 
-- [`lib/std/Target/wasm.zig`](https://github.com/ziglang/zig/blob/master/lib/std/Target/wasm.zig) — feature enum and CPU models.
-- [`lib/std/Target.zig`](https://github.com/ziglang/zig/blob/master/lib/std/Target.zig) — the `Os.Tag` enum and version range parsing.
+- [`lib/std/Target/wasm.zig`](https://codeberg.org/ziglang/zig/src/branch/master/lib/std/Target/wasm.zig) — feature enum and CPU models.
+- [`lib/std/Target.zig`](https://codeberg.org/ziglang/zig/src/branch/master/lib/std/Target.zig) — the `Os.Tag` enum and version range parsing.
 
 ## Architectures
 
