@@ -1,20 +1,22 @@
 # wasm4otel
 
-An OpenTelemetry Collector receiver that runs **WebAssembly plugins**
-as sources of telemetry. Write your data source once in any language
-that compiles to wasm, drop the `.wasm` file into the collector's
-config, and it streams logs (and eventually metrics and traces) into
-the rest of your pipeline.
+OpenTelemetry Collector components — receivers, processors, and
+exporters — written as **WebAssembly plugins**. Write the component
+once in any language that compiles to wasm, point the collector's
+config at a `.wasm` file, and the host loads it at startup instead of
+forcing you to fork and rebuild a collector distribution.
 
-> ⚠️ **Status: proof of concept.** The host/guest ABI is hand-rolled
-> and only logs are wired end-to-end. APIs will change.
+> :warning: **Status: proof of concept.** The host/guest ABI is hand-rolled.
+> Today, only the **logs receiver** path is wired end-to-end; metrics,
+> traces, and the processor/exporter direction are sketched in the
+> host code but not yet functional. APIs will change.
 
 ## Why?
 
 OpenTelemetry Collector components are written in Go and compiled into
-the collector binary. That makes simple "scrape this thing and turn it
-into OTLP" use cases heavier than they need to be: you fork a
-distribution, vendor a module, and ship a new build for every change.
+the collector binary. That makes adding or modifying a component
+heavier than it needs to be: you fork a distribution, vendor a
+module, and ship a new build for every change.
 
 This project explores a lighter path:
 
@@ -29,13 +31,18 @@ This project explores a lighter path:
 
 ## How it fits together
 
+A wasm4otel component is a Go shim that owns a wazero runtime and a
+single `.wasm` module. Depending on which direction the plugin
+implements, it appears in the pipeline as a receiver, a processor, or
+an exporter:
+
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ OpenTelemetry Collector                                          │
 │                                                                  │
 │   ┌──────────────────────────┐         ┌────────────────────┐    │
-│   │   wasm4otel receiver     │  OTLP   │  next consumer     │    │
-│   │   (Go, this repo)        │────────▶│  (processor/export)│    │
+│   │   wasm4otel component    │  OTLP   │  next consumer     │    │
+│   │   (Go, this repo)        │────────▶│                    │    │
 │   │                          │         └────────────────────┘    │
 │   │   ┌──────────────────┐   │                                   │
 │   │   │   wazero runtime │   │                                   │
@@ -48,31 +55,41 @@ This project explores a lighter path:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-The host (Go, in `go/`) provides a small set of imports the guest can
-call:
+The host (Go, in `go/`) exposes a small set of imports the guest can
+call to **push** telemetry into the next consumer:
 
 | Import       | Purpose                                                              |
 | ------------ | -------------------------------------------------------------------- |
 | `host_log`   | Send a log line to the collector's own logger (zap levels).          |
 | `push_logs`  | Hand an OTLP-encoded `LogsData` protobuf to the next consumer.       |
 
-And expects the guest to export `start()` / `stop()` (called on
-collector startup and shutdown), plus the usual WASI `_initialize` or
-freestanding `_start` entrypoint.
+And it looks up a symmetric set of exports the host can call to
+**deliver** telemetry the plugin should consume — `consume_logs`,
+`consume_metrics`, `consume_traces`. These are what a processor or
+exporter plugin would implement. Plus lifecycle exports `start()` /
+`stop()` (called on collector startup and shutdown) and the usual
+WASI `_initialize` or freestanding `_start` entrypoint.
 
-`push_metrics` / `push_traces` and the symmetric `consume_*` exports
-(for processor/exporter-style plugins) are sketched but not wired yet.
+Today only `host_log` and `push_logs` are wired end-to-end. The
+remaining imports and exports are reserved slots that the next round
+of work will fill in.
 
 ## Repository layout
 
 ```
-go/          Collector receiver. Exports NewFactory() for embedding
-             in a collector distribution.
+go/          Collector component (host). Exports NewFactory() for
+             embedding in a collector distribution. Today the factory
+             registers a logs receiver; processor and exporter
+             factories will follow.
+
 zig/         Example plugins in Zig:
-  freestanding/helloworld.zig    Minimal wasm32-freestanding plugin
-  wasip1/log_generator.zig       wasm32-wasi reactor plugin that emits
-                                 a batch of OTLP logs on start
-  src/                           Shared modules (host_log helper, OTLP
+ │
+ └freestanding/helloworld.zig    Minimal wasm32-freestanding plugin
+ │
+ └wasip1/log_generator.zig       wasm32-wasi reactor plugin that emits
+ │                               a batch of OTLP logs on start
+ │
+ └src/                           Shared modules (host_log helper, OTLP
                                  protobuf re-exports)
 ```
 
