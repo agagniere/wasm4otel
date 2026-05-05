@@ -145,10 +145,10 @@ func (self *WasmOtelComponent) LoadPlugin() error {
 		return err
 	}
 
-	config := wazero.NewModuleConfig()
+	config := wazero.NewModuleConfig().
+		WithStartFunctions("_start", "_initialize")
 	//WithStdout(std_os.Stdout).
 	//WithStderr(std_os.Stderr)
-	//WithStartFunctions("_initialize").
 	//WithArgs("toto", "foo")
 
 	instance, err := self.runtime.InstantiateWithConfig(self.context, bytes, config)

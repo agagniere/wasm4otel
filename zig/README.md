@@ -62,14 +62,52 @@ Two `Target.Query`s are configured in `build.zig`:
 | `freestanding` | `wasm32-freestanding` | CPU model `mvp`. Smallest possible runtime — no WASI imports.                             |
 | `wasip1`       | `wasm32-wasi`         | CPU model `lime1` + `bulk_memory`, `reference_types`, `simd128`. Built as a WASI reactor. |
 
-Reactor mode (`exe.wasi_exec_model = .reactor`) makes the toolchain
-expect `_initialize` rather than `_start`. The host (wazero) calls it
-on instantiation. Plugin code must `@export` a function under that
-exact name — see `wasip1/log_generator.zig`.
-
 The `lime1` CPU model and feature additions match the
 [wazero feature set](https://github.com/tetratelabs/wazero/blob/main/api/features.go),
-ensuring the generated wasm runs on the host's interpreter.
+ensuring the generated wasm runs on the host's interpreter. See the
+*Host ABI from the guest side* section below for how `wasi_exec_model`
+maps to the `_start` / `_initialize` entrypoint.
+
+## Host ABI from the guest side
+
+A few Zig/LLVM defaults need to line up with what the host expects.
+
+### Imports default to module `"env"`
+
+```zig
+extern fn host_log(level: i32, ptr: [*]const u8, size: u32) void;
+```
+
+LLVM emits this as `(import "env" "host_log" ...)` because no module
+name was specified. The Go side registers its host module under the
+same string (`NewHostModuleBuilder("env")`) so the import resolves.
+To put an import in a different namespace, declare it as:
+
+```zig
+extern "wasm4otel" fn host_log(...) void;
+```
+
+…and have the host call `NewHostModuleBuilder("wasm4otel")` instead.
+
+### Exports — `@export` controls the wasm name
+
+`export fn start() void { ... }` exposes `start` under that exact
+name. `@export(&fn_ptr, .{ .name = "_initialize" })` does the same
+without renaming the Zig identifier — used in `wasip1/log_generator.zig`
+to satisfy the WASIp1 reactor entrypoint while keeping the Zig
+function called `init`.
+
+The host looks up the names listed in `OtelPlugin.symbols` (see
+*Adding a plugin* below); those strings are the contract.
+
+### `_start` vs `_initialize` is set by `wasi_exec_model`
+
+Reactor mode (`exe.wasi_exec_model = .reactor`) tells the toolchain
+the module is long-lived and to expect `_initialize`. The default
+(`.command`) is one-shot and uses `_start`. Wazero picks which one
+to call at instantiation based on what the module exports — picking
+the wrong `wasi_exec_model` produces a module the host won't run
+correctly.
 
 ## Adding a plugin
 

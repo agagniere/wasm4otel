@@ -62,6 +62,79 @@ After construction, the next consumer is stored on the component and
 the collector calls `Start` (which invokes the plugin's `start`) and
 later `Shutdown` (which invokes `stop` and cancels the context).
 
+## ABI strings used in this code
+
+Three module/function-name strings appear in `wasm_otel_component.go`.
+What each one means:
+
+### `"env"` — toolchain convention
+
+`NewHostModuleBuilder("env")` registers a host module under the
+literal string `"env"`. Wazero treats it like any other name; the
+guest decides the namespace and the host has to match. The reason
+`"env"` is the de facto choice is that LLVM-based toolchains (Clang,
+Rust, Zig) default to it as the import module for any `extern`
+function declared without an explicit one. Pick a different name on
+both sides and it works the same.
+
+### `_start` / `_initialize` — WASIp1 lifecycle
+
+The WASIp1 spec assigns two entrypoint names depending on the module
+type:
+
+| Module type            | Entrypoint     |
+| ---------------------- | -------------- |
+| Command (one-shot)     | `_start`       |
+| Reactor (long-lived)   | `_initialize`  |
+
+Wazero does **not** auto-detect which one a module exports. At
+instantiation it calls whatever is listed in
+`ModuleConfig.WithStartFunctions(...)`, which defaults to `["_start"]`.
+A reactor module instantiated with the default config has its
+`_initialize` skipped silently.
+
+`LoadPlugin` therefore passes both names explicitly:
+
+```go
+config := wazero.NewModuleConfig().
+    WithStartFunctions("_start", "_initialize")
+```
+
+Wazero calls each one that's present and skips ones that aren't, so a
+single config handles both module flavours.
+
+After instantiation, neither is called again — `start()` and `stop()`
+(the function names this project chose, no spec involved) are looked
+up explicitly via `instance.ExportedFunction(...)` and called on
+collector lifecycle events.
+
+### `"wasi_snapshot_preview1"` — the WASI module name
+
+In `wasi_snapshot_preview1.MustInstantiate`, the string is the
+namespace WASIp1 imports use, fixed by the WASI spec. Guests declare
+their WASI imports under that exact module name; the
+`imports/wasi_snapshot_preview1` package registers a host module to
+resolve them.
+
+## Host function signatures via Go reflection
+
+The host functions passed to `WithFunc(...)` look like ordinary Go
+functions — `logToZap` and `outboundLogs` don't manually parse wasm
+values or stack frames. Wazero figures out the wasm signature from
+the Go signature using reflection:
+
+- The first parameter may be `context.Context`. If present, wazero
+  passes the call's context.
+- The next parameter may be `api.Module`. If present, wazero passes
+  the calling module — used for `module.Memory().Read(ptr, size)`.
+- Remaining parameters and the return value are matched 1:1 against
+  wasm value types: `int32`/`uint32` ↔ `i32`, `int64`/`uint64` ↔ `i64`,
+  `float32` ↔ `f32`, `float64` ↔ `f64`. No other Go types are valid.
+
+Memory and string conversions are not automatic — pointer/length
+pairs come through as `i32`s and the host calls
+`module.Memory().Read(...)` to materialize them as `[]byte`.
+
 ## Host imports (what the guest can call)
 
 Exported under the `env` module.
