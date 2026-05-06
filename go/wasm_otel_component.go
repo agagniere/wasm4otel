@@ -146,7 +146,9 @@ func (self *WasmOtelComponent) LoadPlugin() error {
 	}
 
 	config := wazero.NewModuleConfig().
-		WithStartFunctions("_start", "_initialize")
+		WithStartFunctions("_start", "_initialize").
+		WithSysWalltime().
+		WithSysNanotime()
 	//WithStdout(std_os.Stdout).
 	//WithStderr(std_os.Stderr)
 	//WithArgs("toto", "foo")

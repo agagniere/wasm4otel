@@ -100,6 +100,49 @@ Things to **not** rely on in plugins:
 - Multi-memory, memory64, GC, function references, relaxed-simd.
 - Anything Tier 3+ in Wasmtime — wazero hasn't caught up.
 
+## Determinism defaults
+
+Wazero is reproducible-by-default: anything that would otherwise vary
+across runs (clocks, sleeps, randomness) returns a fixed value unless
+the embedder explicitly opts in. This is great for tests and bad for
+plugins that actually want to read wall-clock time.
+
+The defaults a plugin sees out of the box:
+
+| WASIp1 call             | wazero default                                    |
+| ----------------------- | ------------------------------------------------- |
+| `clock_time_get(realtime)`  | `1640995200s, 0ns` — `2022-01-01T00:00:00Z`. |
+| `clock_time_get(monotonic)` | A counter incremented by 1 ns per call.       |
+| `poll_oneoff` (sleep)   | Returns immediately (no real sleep).              |
+| `random_get`            | Deterministic stream from a fixed seed.           |
+
+Opt-in toggles on `wazero.NewModuleConfig()` (used in `LoadPlugin`):
+
+| Method                          | Effect                                                                        |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| `WithSysWalltime()`             | `realtime` clock returns the host's `time.Now()`.                             |
+| `WithSysNanotime()`             | `monotonic` clock returns real `time.Now().UnixNano()`-derived nanoseconds.   |
+| `WithSysNanosleep()`            | `poll_oneoff` actually sleeps for the requested duration.                     |
+| `WithRandSource(io.Reader)`     | Replaces the random source. Pass `crypto/rand.Reader` for unpredictability.   |
+
+What `wasm4otel` enables today, in `LoadPlugin`:
+
+```go
+config := wazero.NewModuleConfig().
+    WithStartFunctions("_start", "_initialize").
+    WithSysWalltime().
+    WithSysNanotime()
+```
+
+Wall and monotonic clocks are real; sleep and randomness are still
+the deterministic defaults. Wire `WithSysNanosleep()` if any plugin
+ever rate-limits or polls; wire `WithRandSource(crypto/rand.Reader)`
+if a plugin generates trace IDs / UUIDs that must be unpredictable
+across collector restarts.
+
+If a plugin author reports their `time_unix_nano` is stuck at 2022,
+the cause is forgetting `WithSysWalltime()` on the host config.
+
 ## Bumping wazero
 
 The wazero v1.10.x → v1.11.0 bump in this repo did **not** unlock
