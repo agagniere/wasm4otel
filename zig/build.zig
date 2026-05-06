@@ -59,47 +59,42 @@ pub fn build(b: *std.Build) !void {
         .imports = &.{.{ .name = "protobuf", .module = protobuf_module }},
     });
 
-    for (freestanding_sources) |source| {
-        var mod = b.createModule(.{
-            .root_source_file = b.path("freestanding").path(b, source.filename),
-            .target = freestanding,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "hostlog", .module = hostLog },
-                .{ .name = "otel_pipeline_data", .module = otelData },
-            },
-        });
-        mod.export_symbol_names = source.symbols;
-        const exe = b.addExecutable(.{
-            .name = source.name(),
-            .root_module = mod,
-        });
-        b.installArtifact(exe);
-        exe.step.dependOn(&run_protoc.step);
-        exe.root_module.addOptions("build_info", build_info);
-    }
+    const plugin_sets = [_]PluginSet{
+        .{ .folder = "freestanding", .target = freestanding, .exec_model = null, .sources = freestanding_sources },
+        .{ .folder = "wasip1", .target = wasip1, .exec_model = .reactor, .sources = wasip1_sources },
+    };
 
-    for (wasip1_sources) |source| {
-        var mod = b.createModule(.{
-            .root_source_file = b.path("wasip1").path(b, source.filename),
-            .target = wasip1,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "hostlog", .module = hostLog },
-                .{ .name = "otel_pipeline_data", .module = otelData },
-            },
-        });
-        mod.export_symbol_names = source.symbols;
-        var exe = b.addExecutable(.{
-            .name = source.name(),
-            .root_module = mod,
-        });
-        exe.wasi_exec_model = .reactor;
-        b.installArtifact(exe);
-        exe.step.dependOn(&run_protoc.step);
-        exe.root_module.addOptions("build_info", build_info);
+    for (plugin_sets) |set| {
+        for (set.sources) |source| {
+            var mod = b.createModule(.{
+                .root_source_file = b.path(set.folder).path(b, source.filename),
+                .target = set.target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "hostlog", .module = hostLog },
+                    .{ .name = "otel_pipeline_data", .module = otelData },
+                },
+            });
+            mod.export_symbol_names = source.symbols;
+            var exe = b.addExecutable(.{
+                .name = source.name(),
+                .root_module = mod,
+            });
+            exe.wasi_exec_model = set.exec_model;
+            b.installArtifact(exe);
+            exe.step.dependOn(&run_protoc.step);
+            exe.root_module.addOptions("build_info", build_info);
+        }
     }
 }
+
+const PluginSet = struct {
+    folder: []const u8,
+    target: std.Build.ResolvedTarget,
+    /// `null` for non-WASI targets
+    exec_model: ?std.builtin.WasiExecModel,
+    sources: []const OtelPlugin,
+};
 
 const OtelPlugin = struct {
     filename: []const u8,
