@@ -20,10 +20,12 @@ src/                 Shared Zig modules consumed by plugins.
   pipeline.zig       "otel_pipeline_data" module: OTLP protobuf re-exports.
 
 freestanding/        Plugins targeting wasm32-freestanding.
+  README.md          Constraints of the freestanding target.
   helloworld.zig     Minimal plugin — just logs through host_log.
   one_log.zig        Encodes and pushes one OTLP log record (no clock).
 
 wasip1/              Plugins targeting wasm32-wasi (reactor model).
+  README.md          What WASI buys, determinism gotchas under wazero.
   log_generator.zig  Emits OTLP logs on start() — uses real clocks
                      and (eventually) a sleep loop.
   severity_parser.zig Demo of the test wiring; covers a small pure

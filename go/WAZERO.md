@@ -89,10 +89,11 @@ The features a plugin can rely on, in practice:
 
 1. Anything in `CoreFeaturesV2` (i.e. WASM 2.0 minus relaxed-simd).
 2. WASI Preview 1, including reactor mode (`_initialize`).
-3. Optionally, threads/tail-call/extended-const/exception-handling
-   *if* `wasm_otel_component.go` opts them in via
-   `wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(...)`.
-   It does not today.
+3. Optionally, threads/tail-call/extended-const/exception-handling —
+   only if the host runtime is built with
+   `wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(...)`
+   opting them in. Plugins should not assume any of these are
+   available unless the host has been configured to provide them.
 
 Things to **not** rely on in plugins:
 
@@ -125,23 +126,17 @@ Opt-in toggles on `wazero.NewModuleConfig()` (used in `LoadPlugin`):
 | `WithSysNanosleep()`            | `poll_oneoff` actually sleeps for the requested duration.                     |
 | `WithRandSource(io.Reader)`     | Replaces the random source. Pass `crypto/rand.Reader` for unpredictability.   |
 
-What `wasm4otel` enables today, in `LoadPlugin`:
+If a plugin needs real (non-deterministic) values from any of these
+WASI calls, ensure the matching `With…` is set on the
+`wazero.ModuleConfig` passed to `runtime.InstantiateWithConfig` (see
+`wasm_otel_component.go`). Common symptoms of a missing opt-in:
 
-```go
-config := wazero.NewModuleConfig().
-    WithStartFunctions("_start", "_initialize").
-    WithSysWalltime().
-    WithSysNanotime()
-```
-
-Wall and monotonic clocks are real; sleep and randomness are still
-the deterministic defaults. Wire `WithSysNanosleep()` if any plugin
-ever rate-limits or polls; wire `WithRandSource(crypto/rand.Reader)`
-if a plugin generates trace IDs / UUIDs that must be unpredictable
-across collector restarts.
-
-If a plugin author reports their `time_unix_nano` is stuck at 2022,
-the cause is forgetting `WithSysWalltime()` on the host config.
+- `time_unix_nano` stuck at `1640995200000000000` (2022-01-01) →
+  `WithSysWalltime()` is not wired.
+- A plugin's "every N seconds" loop returns immediately instead of
+  pacing → `WithSysNanosleep()` is not wired.
+- Trace IDs / UUIDs collide across collector restarts →
+  `WithRandSource(crypto/rand.Reader)` is not wired.
 
 ## Bumping wazero
 
