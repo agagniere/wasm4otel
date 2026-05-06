@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
 
     // Dependencies
-    const protobuf = b.dependency("protobuf", .{});
+    const protobuf = b.dependency("protobuf", .{ .optimize = optimize });
     const protobuf_module = protobuf.module("protobuf");
     const otelproto = b.dependency("otelproto", .{});
 
