@@ -1,6 +1,6 @@
 .{
     .name = .zotel,
-    .version = "0.0.0",
+    .version = "0.0.1",
     .fingerprint = 0x19739a3b1dfa9749,
     .minimum_zig_version = "0.16.0",
 
