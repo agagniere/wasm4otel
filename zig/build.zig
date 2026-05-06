@@ -15,8 +15,11 @@ pub fn build(b: *std.Build) !void {
     const wasip1 = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .wasi,
+        // Pin the WASI min to 0.1.0 so `--summary all` tags the target
+        // as `wasm32-wasi.0.1`, making preview1 vs preview2 obvious.
+        // Functionally a no-op on Zig 0.16 — stdlib doesn't branch on
+        // the WASI version range — but cheap insurance once it does.
         .os_version_min = .{ .semver = .{ .major = 0, .minor = 1, .patch = 0 } },
-        .os_version_max = .{ .semver = .{ .major = 0, .minor = 1, .patch = 99 } },
         // https://github.com/wazero/wazero/blob/main/api/features.go#L30
         .cpu_model = .{ .explicit = &std.Target.wasm.cpu.lime1 },
         .cpu_features_add = std.Target.wasm.featureSet(&.{ .bulk_memory, .reference_types, .simd128 }),
@@ -32,6 +35,7 @@ pub fn build(b: *std.Build) !void {
     const build_info = b.addOptions();
     build_info.addOption([]const u8, "version", zon.version);
     build_info.addOption([]const u8, "name", name);
+    const build_info_mod = build_info.createModule();
 
     // Generate from protobuf
     const gen_proto = b.step("gen-proto", "Generate zig files from protocol buffer definitions");
@@ -75,6 +79,7 @@ pub fn build(b: *std.Build) !void {
                 .imports = &.{
                     .{ .name = "hostlog", .module = hostLog },
                     .{ .name = "otel_pipeline_data", .module = otelData },
+                    .{ .name = "build_info", .module = build_info_mod },
                 },
             });
             mod.export_symbol_names = source.symbols;
@@ -85,26 +90,14 @@ pub fn build(b: *std.Build) !void {
             exe.wasi_exec_model = set.exec_model;
             b.installArtifact(exe);
             exe.step.dependOn(&run_protoc.step);
-            exe.root_module.addOptions("build_info", build_info);
 
             if (source.tests) {
-                const test_mod = b.createModule(.{
-                    .root_source_file = b.path(set.folder).path(b, source.filename),
-                    .target = set.target,
-                    .optimize = optimize,
-                    .imports = &.{
-                        .{ .name = "hostlog", .module = hostLog },
-                        .{ .name = "otel_pipeline_data", .module = otelData },
-                    },
-                });
                 const test_exe = b.addTest(.{
                     .name = b.fmt("{s}-test", .{source.name()}),
-                    .root_module = test_mod,
+                    .root_module = mod,
                 });
-                test_exe.root_module.addOptions("build_info", build_info);
                 test_exe.step.dependOn(&run_protoc.step);
-                const run_test = b.addRunArtifact(test_exe);
-                test_step.dependOn(&run_test.step);
+                test_step.dependOn(&b.addRunArtifact(test_exe).step);
             }
         }
     }

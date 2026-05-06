@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_info = @import("build_info");
 const host_log = @import("hostlog");
 const otelData = @import("otel_pipeline_data");
 

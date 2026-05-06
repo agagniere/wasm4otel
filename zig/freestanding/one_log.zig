@@ -33,11 +33,11 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
 }
 
 export fn start() void {
-    std.log.debug("Generating and pushing 1 log");
+    std.log.debug("Generating and pushing 1 log", .{});
     pushOne(std.heap.wasm_allocator) catch |err| {
         std.log.err("Failed to push log: {t}", .{err});
     };
-    std.log.debug("Success !");
+    std.log.debug("Success !", .{});
 }
 
 fn pushOne(alloc: Allocator) !void {
