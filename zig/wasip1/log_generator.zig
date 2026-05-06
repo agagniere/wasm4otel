@@ -28,7 +28,7 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
         build_info.version,
         builtin.zig_version_string,
     });
-    std.log.info("From {t} {t} {t} {t}", .{
+    std.log.info("Running on {t} {t} {t} {t}", .{
         builtin.cpu.arch,
         builtin.os.tag,
         builtin.abi,

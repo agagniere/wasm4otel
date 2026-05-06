@@ -64,6 +64,8 @@ pub fn build(b: *std.Build) !void {
         .{ .folder = "wasip1", .target = wasip1, .exec_model = .reactor, .sources = wasip1_sources },
     };
 
+    const test_step = b.step("test", "Run plugin tests under wasmtime (requires -fwasmtime)");
+
     for (plugin_sets) |set| {
         for (set.sources) |source| {
             var mod = b.createModule(.{
@@ -84,6 +86,26 @@ pub fn build(b: *std.Build) !void {
             b.installArtifact(exe);
             exe.step.dependOn(&run_protoc.step);
             exe.root_module.addOptions("build_info", build_info);
+
+            if (source.tests) {
+                const test_mod = b.createModule(.{
+                    .root_source_file = b.path(set.folder).path(b, source.filename),
+                    .target = set.target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "hostlog", .module = hostLog },
+                        .{ .name = "otel_pipeline_data", .module = otelData },
+                    },
+                });
+                const test_exe = b.addTest(.{
+                    .name = b.fmt("{s}-test", .{source.name()}),
+                    .root_module = test_mod,
+                });
+                test_exe.root_module.addOptions("build_info", build_info);
+                test_exe.step.dependOn(&run_protoc.step);
+                const run_test = b.addRunArtifact(test_exe);
+                test_step.dependOn(&run_test.step);
+            }
         }
     }
 }
@@ -99,6 +121,7 @@ const PluginSet = struct {
 const OtelPlugin = struct {
     filename: []const u8,
     symbols: []const []const u8,
+    tests: bool = false,
 
     pub fn name(self: OtelPlugin) []const u8 {
         return std.mem.cutSuffix(u8, self.filename, ".zig").?;
@@ -107,9 +130,10 @@ const OtelPlugin = struct {
 
 const freestanding_sources: []const OtelPlugin = &.{
     .{ .filename = "helloworld.zig", .symbols = &.{ "start", "stop" } },
-    .{ .filename = "one_log.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "one_log.zig", .symbols = &.{"start"} },
 };
 
 const wasip1_sources: []const OtelPlugin = &.{
     .{ .filename = "log_generator.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "severity_parser.zig", .symbols = &.{"start"}, .tests = true },
 };
