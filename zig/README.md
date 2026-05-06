@@ -31,42 +31,34 @@ and is gitignored — do not edit by hand.
 
 ## Requirements
 
-- **Zig 0.16.0+** (declared in `build.zig.zon`).
-- Network access on first build to fetch the pinned dependencies via
-  `zig fetch`.
+- **Zig 0.16.0+**
+- Network access on first build to fetch the pinned dependencies
 
 ## Building
 
 ```sh
 zig build                       # build all plugins → zig-out/bin/*.wasm
-zig build gen-proto             # regenerate src/opentelemetry/proto/**/*.pb.zig
-zig build -Doptimize=Debug      # debug build (default is ReleaseSmall)
+zig build gen-proto             # only generate src/opentelemetry/proto/**/*.pb.zig
 ```
 
-Optimization defaults to `ReleaseSmall` (set as
-`preferred_optimize_mode` in `build.zig`) so plugins stay compact;
-override with `-Doptimize=` for `Debug`, `ReleaseFast`, or
-`ReleaseSafe`.
-
-`gen-proto` runs the `protobuf` dependency's `RunProtocStep` over the
-selected `.proto` files from the upstream `opentelemetry-proto` repo.
-It is wired as a dependency of every plugin executable, so a plain
-`zig build` regenerates the bindings as needed.
+The `--release` flag can be used, with a default optimization of `ReleaseSmall`.
 
 ## Targets
 
 Two `Target.Query`s are configured in `build.zig`:
 
-| Set            | Triple                | Notes                                                                                     |
-| -------------- | --------------------- | ----------------------------------------------------------------------------------------- |
-| `freestanding` | `wasm32-freestanding` | CPU model `mvp`. Smallest possible runtime — no WASI imports.                             |
-| `wasip1`       | `wasm32-wasi`         | CPU model `lime1` + `bulk_memory`, `reference_types`, `simd128`. Built as a WASI reactor. |
+| Set            | Triple                | Notes                                                                               |
+|----------------|-----------------------|-------------------------------------------------------------------------------------|
+| `freestanding` | `wasm32-freestanding` | CPU model `mvp`. Smallest possible runtime — no WASI imports.                       |
+| `wasip1`       | `wasm32-wasi`         | CPU model `lime1` + `bulk_memory`, `reference_types`, `simd128`. For WASI reactors. |
 
 The `lime1` CPU model and feature additions match the
 [wazero feature set](https://github.com/tetratelabs/wazero/blob/main/api/features.go),
 ensuring the generated wasm runs on the host's interpreter. See the
 *Host ABI from the guest side* section below for how `wasi_exec_model`
 maps to the `_start` / `_initialize` entrypoint.
+
+See [WASM.md](WASM.md) for more details.
 
 ## Host ABI from the guest side
 
@@ -102,12 +94,47 @@ The host looks up the names listed in `OtelPlugin.symbols` (see
 
 ### `_start` vs `_initialize` is set by `wasi_exec_model`
 
-Reactor mode (`exe.wasi_exec_model = .reactor`) tells the toolchain
-the module is long-lived and to expect `_initialize`. The default
-(`.command`) is one-shot and uses `_start`. Wazero picks which one
-to call at instantiation based on what the module exports — picking
-the wrong `wasi_exec_model` produces a module the host won't run
-correctly.
+`exe.wasi_exec_model = .command` makes wasm-ld treat the module as
+one-shot and require a `_start` entry symbol. `.reactor` tells it
+the module is long-lived and require `_initialize` instead. Picking
+the wrong one is a *link-time* error — the linker fails with "entry
+symbol not defined" if the corresponding export is missing.
+
+Zig 0.16 does **not** auto-emit either entrypoint. The plugin code
+must declare it. For pure-Zig reactor builds, the minimum is:
+
+```zig
+export fn _initialize() callconv(.{ .wasm_mvp = .{} }) void {}
+```
+
+The WASI ABI
+([`design/application-abi.md`](https://github.com/WebAssembly/WASI/blob/snapshot-01/design/application-abi.md))
+only requires that `_initialize`, if present, is "called by the
+environment at most once" before any other export.
+
+#### When `_initialize` should call `__wasm_call_ctors`
+
+`__wasm_call_ctors` is a synthetic function emitted by **wasm-ld**
+that calls every entry contributed to `.init_funcs` / `.init_array`
+by linked objects. Common contributors:
+
+- C++ classes with non-trivial static constructors.
+- C functions marked `__attribute__((constructor))`.
+- Rust crates using `#[ctor]`-style macros.
+- Any C runtime startup file (e.g. wasi-libc's `crt1-reactor.o`)
+  that hooks into the same mechanism.
+
+If anything in the link contributes such entries, the reactor's
+`_initialize` is the conventional place to run them.
+
+Pure Zig (and pure-Zig deps like `zig-protobuf`) emits no
+`.init_funcs` entries, so for this project's plugins the call is a
+no-op and can be omitted.
+
+On the host side, wazero does not auto-detect command vs reactor —
+`LoadPlugin` in `go/wasm_otel_component.go` passes both names to
+`WithStartFunctions(...)`, so whichever entrypoint the plugin
+declares gets called.
 
 ## Adding a plugin
 
@@ -177,15 +204,7 @@ Plugins can `@import("build_info")` to stamp their telemetry, as
 
 ## Bumping dependencies
 
-`UPDATE.md` has the canonical commands. Summary:
-
-```sh
-zig fetch --save git+https://github.com/Arwalk/zig-protobuf#vX.Y.Z
-zig fetch --save=otelproto git+https://github.com/open-telemetry/opentelemetry-proto#vX.Y.Z
-```
-
-After bumping `otelproto`, run `zig build gen-proto` to regenerate the
-bindings.
+See [UPDATE.md](UPDATE.md)
 
 ## About the Makefile
 

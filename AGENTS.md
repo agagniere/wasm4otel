@@ -23,7 +23,7 @@ Host imports exposed in the `env` module (called from the guest):
 Guest exports the host calls:
 - `start()` — invoked from `Start(ctx, host)`. The log generator does its work synchronously here.
 - `stop()` — invoked from `Shutdown(ctx)`.
-- `_initialize` (WASI reactor) or `_start` (freestanding) — wazero invokes one of these on instantiation depending on the module type.
+- `_initialize` (WASI reactor) or `_start` (command / freestanding) — the plugin code declares one or the other; wasm-ld requires whichever the `wasi_exec_model` selected. `LoadPlugin` passes both names to `ModuleConfig.WithStartFunctions(...)` and wazero calls whichever is present.
 - `capabilities`, `consume_logs`, `consume_metrics`, `consume_traces` — looked up by the host but not yet called; reserved for processor/exporter-style plugins.
 
 ## Building and running
@@ -57,7 +57,7 @@ The package exports `NewFactory()` for use inside an OTel Collector distribution
 ## Things that are easy to get wrong
 
 - The proto-generated Zig sources under `zig/src/opentelemetry/proto/` are gitignored and produced by `gen-proto`. Don't hand-edit them; they're regenerated from the pinned `otelproto` dep.
-- `wasi_exec_model = .reactor` on wasip1 plugins is what causes wazero to call `_initialize` instead of `_start`. The Zig source still has to `@export` the function under that name (see `wasip1/log_generator.zig`).
+- `wasi_exec_model = .reactor` on wasip1 plugins is what makes wasm-ld require `_initialize` as the entry symbol (vs `_start` in command/freestanding). Zig 0.16 does not auto-emit either — the plugin source must `@export` the function (see `wasip1/log_generator.zig`). Wazero itself doesn't auto-detect; `LoadPlugin` passes both names to `WithStartFunctions(...)` so whichever the plugin declares gets called.
 - `host_log` log levels are zap levels, not `std.log.Level` values. `zig/src/log.zig` has `LogLevel.fromStd` to bridge them — use `hostLog`/`hostLogFormat`/`logFn` from that module rather than calling `host_log` directly.
 - `push_logs` expects an OTLP `LogsData` protobuf payload; the encoding lives in the generated `Logs` types re-exported through `zig/src/pipeline.zig` (`otel_pipeline_data` module).
 - `wasm_otel_component.go` currently uses `wazero.NewRuntimeConfigInterpreter()` (interpreter, not compiler) — performance-sensitive changes should account for that.
