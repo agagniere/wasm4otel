@@ -25,8 +25,21 @@ Reasons to prefer it over `wasip1`:
 - **Simpler ABI surface.** The only imports are the ones explicitly
   declared with `extern fn`.
 
-`helloworld.zig` is the canonical example: it logs through `host_log`
-and does nothing else.
+Two examples live here:
+
+- `helloworld.zig` — logs through `host_log` and nothing else.
+  Release build: **~1.5 KB**.
+- `one_log.zig` — builds a one-record `LogsData`, encodes it to OTLP
+  protobuf via `otel_pipeline_data`, and pushes it through
+  `push_logs`. Release build: **~11 KB**.
+
+`one_log.zig` answers the obvious question: **OTLP encoding is fully
+freestanding-compatible.** The protobuf encoder is pure byte-pushing
+into a writer, the generated structs touch no syscalls, and
+`std.heap.wasm_allocator` works without WASI. Inspecting the output
+with `wasm-tools print` shows only two imports —
+`(import "env" "host_log" ...)` and `(import "env" "push_logs" ...)`
+— and zero `wasi_snapshot_preview1` references.
 
 ## What works
 
@@ -63,6 +76,15 @@ the missing WASI symbol. That is the signal to either move the plugin
 to [`../wasip1/`](../wasip1/) or to expose what it needs as a new host
 import on the Go side.
 
+The constraint shows up in `one_log.zig`: with no real-time clock
+available, `time_unix_nano` and `observed_time_unix_nano` are left at
+their default of `0`. A freestanding plugin that needs an honest
+timestamp has to either receive it from the host (e.g. as an extra
+parameter to `start`, or via a new `host_now()` import) or move to
+the WASIp1 target. The same applies to `poll_oneoff` — anything that
+needs to sleep, batch on a timer, or rate-limit belongs in
+[`../wasip1/`](../wasip1/).
+
 ## Entrypoint
 
 `wasm-ld` defaults to requiring `_start` as the module's entry
@@ -92,4 +114,5 @@ const freestanding_sources: []const OtelPlugin = &.{
 };
 ```
 
-The `hostlog` module is wired by default; `otel_pipeline_data` is not.
+Both `hostlog` and `otel_pipeline_data` are wired into the
+freestanding loop by default — see `build.zig`.

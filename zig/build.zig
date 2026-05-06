@@ -66,6 +66,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "hostlog", .module = hostLog },
+                .{ .name = "otel_pipeline_data", .module = otelData },
             },
         });
         mod.export_symbol_names = source.symbols;
@@ -111,6 +112,7 @@ const OtelPlugin = struct {
 
 const freestanding_sources: []const OtelPlugin = &.{
     .{ .filename = "helloworld.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "one_log.zig", .symbols = &.{ "start", "stop" } },
 };
 
 const wasip1_sources: []const OtelPlugin = &.{
