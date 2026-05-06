@@ -38,18 +38,35 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
 
 /// Begin logs reception
 export fn start() void {
-    const alloc: Allocator = std.heap.wasm_allocator;
+    var arena: std.heap.ArenaAllocator = .init(std.heap.wasm_allocator);
+    defer arena.deinit();
+    const alloc: Allocator = arena.allocator();
+
     var threaded: Io.Threaded = .init_single_threaded;
     const io = threaded.io();
 
-    const logs = generateLogs(alloc, io) catch |err| {
-        std.log.err("Fail generation: {t}", .{err});
-        return;
-    };
-    pushLogs(alloc, logs) catch {
-        std.log.err("Failed to send", .{});
-        return;
-    };
+    const interval: Io.Duration = .fromSeconds(2);
+    const ticks = 5;
+
+    for (0..ticks) |i| {
+        defer _ = arena.reset(.retain_capacity);
+
+        std.log.info("Tick {d}/{d}", .{ i + 1, ticks });
+
+        const logs = generateLogs(alloc, io) catch |err| {
+            std.log.err("Fail generation: {t}", .{err});
+            continue;
+        };
+
+        pushLogs(alloc, logs) catch {
+            std.log.err("Failed to send", .{});
+        };
+
+        if (i + 1 < ticks) io.sleep(interval, .awake) catch |err| {
+            std.log.warn("Sleep cancelled: {t}", .{err});
+            break;
+        };
+    }
 }
 
 /// End logs reception

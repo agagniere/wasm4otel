@@ -91,7 +91,7 @@ func (self *WasmOtelComponent) outboundLogs(
 	deserializer := otel_logs.ProtoUnmarshaler{}
 	logs, err := deserializer.UnmarshalLogs(buffer)
 	if err != nil {
-		self.guestLogger.Errorw("Unable to deserialize logs", "size", size)
+		self.guestLogger.Errorw("Unable to deserialize logs", "size", size, "error", err)
 		return 2
 	}
 	if self.nextConsumerLogs == nil {
@@ -148,7 +148,8 @@ func (self *WasmOtelComponent) LoadPlugin() error {
 	config := wazero.NewModuleConfig().
 		WithStartFunctions("_start", "_initialize").
 		WithSysWalltime().
-		WithSysNanotime()
+		WithSysNanotime().
+		WithSysNanosleep()
 	//WithStdout(std_os.Stdout).
 	//WithStderr(std_os.Stderr)
 	//WithArgs("toto", "foo")
