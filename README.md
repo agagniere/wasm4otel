@@ -1,40 +1,21 @@
 # wasm4otel
 
-OpenTelemetry Collector components — receivers, processors, and
-exporters — written as **WebAssembly plugins**. Write the component
-once in any language that compiles to wasm, point the collector's
-config at a `.wasm` file, and the host loads it at startup instead of
-forcing you to fork and rebuild a collector distribution.
+OpenTelemetry Collector components as **WebAssembly plugins**.
+
+- **More flexible**: Plugins can be added, removed, updated, without rebuilding the collector
+- **Wider ecosystem**: Written in any language that can be compiled to Wasm: C, C++, Rust, Zig, ...
+- **Leaner distribution**: The collector binary can be smaller while allowing more components to be used
+- **Security**: Wasm plugins can only access what the host allowed them to access
 
 > :warning: **Status: proof of concept.** The host/guest ABI is hand-rolled.
 > Today, only the **logs receiver** path is wired end-to-end; metrics,
 > traces, and the processor/exporter direction are sketched in the
 > host code but not yet functional. APIs will change.
 
-## Why?
-
-OpenTelemetry Collector components are written in Go and compiled into
-the collector binary. That makes adding or modifying a component
-heavier than it needs to be: you fork a distribution, vendor a
-module, and ship a new build for every change.
-
-This project explores a lighter path:
-
-- The collector loads a `.wasm` plugin at startup — no rebuild of the
-  collector itself.
-- Plugins run in a sandbox (wazero, pure-Go interpreter): no syscalls
-  the host doesn't grant, deterministic memory.
-- Plugins can be written in any language with a wasm backend. Zig is
-  used here because it has small binaries, an easy `wasm32-wasi`
-  target, and good protobuf tooling — but Rust, Go (TinyGo), C, etc.
-  all work against the same ABI.
-
 ## How it fits together
 
 A wasm4otel component is a Go shim that owns a wazero runtime and a
-single `.wasm` module. Depending on which direction the plugin
-implements, it appears in the pipeline as a receiver, a processor, or
-an exporter:
+single `.wasm` module. For now it can only be a receiver:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -74,34 +55,15 @@ Today only `host_log` and `push_logs` are wired end-to-end. The
 remaining imports and exports are reserved slots that the next round
 of work will fill in.
 
-## Repository layout
-
-```
-go/          Collector component (host). Exports NewFactory() for
-             embedding in a collector distribution. Today the factory
-             registers a logs receiver; processor and exporter
-             factories will follow.
-
-zig/         Example plugins in Zig:
- │
- └freestanding/helloworld.zig    Minimal wasm32-freestanding plugin
- │
- └wasip1/log_generator.zig       wasm32-wasi reactor plugin that emits
- │                               a batch of OTLP logs on start
- │
- └src/                           Shared modules (host_log helper, OTLP
-                                 protobuf re-exports)
-```
-
 ## Quickstart
 
 ### Build the example plugin (Zig)
 
 Requires Zig **0.16.0** or newer.
 
-```sh
+```shell
 cd zig
-zig build           # outputs zig-out/bin/log_generator.wasm and helloworld.wasm
+zig build     # outputs *.wasm files in zig-out/bin/
 ```
 
 The first build also fetches `zig-protobuf` and the official
