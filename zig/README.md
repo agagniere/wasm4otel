@@ -17,6 +17,7 @@ Makefile             Legacy single-file build flow. Not used by build.zig.
 
 src/                 Shared Zig modules consumed by plugins.
   log.zig            "hostlog" module: host_log binding + std.log adapter.
+  host.zig           "host" module: non-OTLP host helpers (interruptible sleep).
   pipeline.zig       "otel_pipeline_data" module: OTLP protobuf re-exports.
 
 freestanding/        Plugins targeting wasm32-freestanding.
@@ -179,7 +180,7 @@ suffix.
 
 ## Shared modules
 
-Both arrays of sources get `hostlog` and `otel_pipeline_data`
+Both arrays of sources get `hostlog`, `host`, and `otel_pipeline_data`
 imported by default — see [`freestanding/one_log.zig`](freestanding/one_log.zig)
 for an example of OTLP encoding on the freestanding target.
 
@@ -199,6 +200,20 @@ The internal `LogLevel` enum mirrors zap's levels (debug=-1, info=0,
 …). `fromStd` converts `std.log.Level` to that range — call
 `hostLog`/`hostLogFormat` directly if you want a level without a
 `std.log` equivalent (e.g. `fatal`).
+
+### `host` (`src/host.zig`)
+
+Wrappers over host-provided primitives that aren't OTLP plumbing. Today:
+`interruptibleMilliSleep(u32)` and `interruptibleSleep(u16)`, which
+call the host's `interruptible_sleep_ms` import and turn a non-zero
+return into `error.Interrupted` — the host returns non-zero when the
+component's context fires (e.g. on `Shutdown`), giving plugins a
+graceful, sub-millisecond unwind path that doesn't depend on
+`WithSysNanosleep` or any WASI plumbing. Works in both `freestanding`
+and `wasip1` targets since it's just a function in the host's `env`
+module.
+
+`hostlog` may eventually fold in here.
 
 ### `otel_pipeline_data` (`src/pipeline.zig`)
 

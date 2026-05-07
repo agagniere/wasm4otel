@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) !void {
 
     // Common modules
     const hostLog = b.addModule("hostlog", .{ .root_source_file = b.path("src/log.zig") });
+    const host = b.addModule("host", .{ .root_source_file = b.path("src/host.zig") });
     const otelData = b.addModule("otel_pipeline_data", .{
         .root_source_file = b.path("src/pipeline.zig"),
         .imports = &.{.{ .name = "protobuf", .module = protobuf_module }},
@@ -78,6 +79,7 @@ pub fn build(b: *std.Build) !void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "hostlog", .module = hostLog },
+                    .{ .name = "host", .module = host },
                     .{ .name = "otel_pipeline_data", .module = otelData },
                     .{ .name = "build_info", .module = build_info_mod },
                 },

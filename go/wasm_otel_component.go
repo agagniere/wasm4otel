@@ -6,6 +6,7 @@ import (
 	std_io "io"
 	std_os "os"
 	std_sync "sync"
+	std_time "time"
 
 	uber_zap "go.uber.org/zap"
 	uber_zapcore "go.uber.org/zap/zapcore"
@@ -76,6 +77,7 @@ func (self *WasmOtelComponent) ExposeFunctionsToGuest() error {
 		NewFunctionBuilder().WithFunc(self.outboundLogs).Export("push_logs").
 		//NewFunctionBuilder().WithFunc(self.outboundMetrics).Export("push_metrics").
 		//NewFunctionBuilder().WithFunc(self.outboundTraces).Export("push_traces").
+		NewFunctionBuilder().WithFunc(self.interruptibleSleepMs).Export("interruptible_sleep_ms").
 		Instantiate(self.context)
 	return err
 }
@@ -134,6 +136,18 @@ func (self *WasmOtelComponent) Shutdown(context std_context.Context) error {
 	return nil
 }
 
+// interruptibleSleepMs blocks for `ms` milliseconds, returning early
+// when the component's context is cancelled (i.e. Shutdown ran).
+// Returns 0 on full elapse, 1 on early wake-up.
+func (self *WasmOtelComponent) interruptibleSleepMs(_ std_context.Context, ms uint32) uint32 {
+	select {
+	case <-std_time.After(std_time.Duration(ms) * std_time.Millisecond):
+		return 0
+	case <-self.context.Done():
+		return 1
+	}
+}
+
 func (self *WasmOtelComponent) logToZap(_ std_context.Context, module wazero_api.Module, level int32, offset uint32, size uint32) {
 	buffer, ok := module.Memory().Read(offset, size)
 	if !ok {
@@ -164,8 +178,7 @@ func (self *WasmOtelComponent) LoadPlugin() error {
 	config := wazero.NewModuleConfig().
 		WithStartFunctions("_start", "_initialize").
 		WithSysWalltime().
-		WithSysNanotime().
-		WithSysNanosleep()
+		WithSysNanotime()
 	//WithStdout(std_os.Stdout).
 	//WithStderr(std_os.Stderr)
 	//WithArgs("toto", "foo")

@@ -85,7 +85,7 @@ while (running) {
     try pushLogs(alloc, logs);
     // No `logs.deinit(alloc)` — the literals inside would corrupt
     // the underlying allocator. `arena.reset` releases everything.
-    try io.sleep(.fromSeconds(2), .awake);
+    try host.interruptibleSleep(2);
 }
 ```
 
@@ -113,18 +113,16 @@ plugins instantiate the same way from the host's point of view.
 - **`log_generator.zig`** — emits a batch of OTLP `LogRecord`s with
   real `time_unix_nano` / `observed_time_unix_nano`, encodes via
   `otel_pipeline_data`, and pushes through `push_logs`. Loops a
-  fixed number of times with `io.sleep(...)` between batches. The
-  sleep only pauses for real if the host wires
-  `WithSysNanosleep()`; otherwise it returns immediately and the
-  loop bursts through. The host runs `start.Call(...)` on a
-  dedicated goroutine, so the loop doesn't block collector startup;
-  `Shutdown` cancels the component's context (which surfaces as
-  `Cancelable.Canceled` out of the next host import — the existing
-  `catch |err| break` on `io.sleep` is the unwind hook), waits for
-  the goroutine to drain, then calls `stop`. With the default
-  wazero `WithSysNanosleep` (Go's `time.Sleep`, not ctx-aware),
-  cancellation is observed only once the in-flight sleep elapses
-  — so the worst-case shutdown latency is one sleep interval.
+  fixed number of times, pacing batches with `host.interruptibleSleep`.
+  The host runs `start.Call(...)` on a dedicated goroutine, so the
+  loop doesn't block collector startup. `Shutdown` cancels the
+  component's context, which makes `interruptible_sleep_ms` return
+  non-zero on its `select`'s `<-ctx.Done()` arm; the Zig wrapper
+  surfaces that as `error.Interrupted`, the loop's `try` unwinds
+  the iteration's `defer`s, `start` returns, the goroutine drains,
+  and `stop` runs. Shutdown latency is sub-millisecond regardless
+  of the sleep interval, and the path doesn't depend on wazero's
+  ctx-cancellation semantics or on `WithSysNanosleep` being wired.
 - **`severity_parser.zig`** — small textual-severity → OTLP
   `SeverityNumber` parser with `test {}` blocks. Demonstrates the
   `zig build test -fwasmtime` flow; see the *Tests* section of

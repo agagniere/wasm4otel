@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_info = @import("build_info");
 const otelData = @import("otel_pipeline_data");
+const host = @import("host");
 const host_log = @import("hostlog");
 
 const Allocator = std.mem.Allocator;
@@ -45,7 +46,6 @@ export fn start() void {
     var threaded: Io.Threaded = .init_single_threaded;
     const io = threaded.io();
 
-    const interval: Io.Duration = .fromSeconds(10);
     const ticks = 5;
 
     for (0..ticks) |i| {
@@ -62,8 +62,8 @@ export fn start() void {
             std.log.err("Failed to send", .{});
         };
 
-        if (i + 1 < ticks) io.sleep(interval, .awake) catch |err| {
-            std.log.warn("Sleep cancelled: {t}", .{err});
+        if (i + 1 < ticks) host.interruptibleSleep(10) catch |err| {
+            std.log.info("Loop interrupted: {t}", .{err});
             break;
         };
     }
