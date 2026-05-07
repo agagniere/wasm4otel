@@ -28,7 +28,7 @@ freestanding/        Plugins targeting wasm32-freestanding.
 wasip1/              Plugins targeting wasm32-wasi (reactor model).
   README.md          What WASI buys, determinism gotchas under wazero.
   log_generator.zig  Emits OTLP logs on start() — uses real clocks
-                     and (eventually) a sleep loop.
+                     and a host.interruptibleSleep loop.
   severity_parser.zig Demo of the test wiring; covers a small pure
                      helper.
 ```

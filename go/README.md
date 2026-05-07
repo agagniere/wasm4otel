@@ -54,7 +54,7 @@ builds the pipeline:
    `createLogs` returns), creates a wazero runtime, instantiates
    `wasi_snapshot_preview1`.
 2. `ExposeFunctionsToGuest` — registers an `env` host module
-   exporting `host_log` and `push_logs`.
+   exporting `host_log`, `push_logs`, and `interruptible_sleep_ms`.
 3. `LoadPlugin` — reads the `.wasm` file from disk, instantiates the
    module (which runs `_start` or `_initialize`), and looks up
    exported functions: `start`, `stop`, `capabilities`,
@@ -168,6 +168,17 @@ calls `nextConsumerLogs.ConsumeLogs`. Return codes:
 `ExposeFunctionsToGuest`. Adding them is mostly mechanical (use
 `pmetric` / `ptrace` unmarshallers and the corresponding consumer
 interfaces) once metrics/traces signals are registered in the factory.
+
+### `interruptible_sleep_ms(ms: i32) -> i32`
+
+`select`s on `time.After(ms * Millisecond)` versus the component's
+context. Returns `0` when the duration elapses normally, `1` when the
+context fires (i.e. `Shutdown` ran). This is the cooperative-shutdown
+hook the plugin's loop hangs off — see `zig/src/host.zig` for the
+guest-side wrapper that turns the non-zero return into
+`error.Interrupted`. The underlying `select` resolves immediately when
+the context fires, so shutdown latency is sub-millisecond regardless
+of the requested sleep duration.
 
 ## Guest exports (what the host looks up)
 

@@ -58,7 +58,7 @@ Anything that would normally go through WASI is unavailable:
 | `std.fs.*` (files, dirs)             | needs `fd_*` from `wasi_snapshot_preview1`                |
 | `std.Io.Clock.now(.real, io)` etc.   | needs `clock_time_get`                                    |
 | `std.crypto.random` via the OS path  | needs `random_get`                                        |
-| Sleep / `Io.Threaded.io().sleep(...)`| needs `poll_oneoff`                                       |
+| Sleep via `Io.Threaded.io().sleep(...)` | needs `poll_oneoff` — but `host.interruptibleSleep` from the `host` module works here |
 | `std.process.argsAlloc`, env vars    | needs `args_get` / `environ_get`                          |
 | Writing to stdout / stderr           | needs `fd_write` on fd 1/2                                |
 | `std.process.exit(n)`                | needs `proc_exit` — `unreachable` traps instead           |
@@ -74,9 +74,14 @@ available, `time_unix_nano` and `observed_time_unix_nano` are left at
 their default of `0`. A freestanding plugin that needs an honest
 timestamp has to either receive it from the host (e.g. as an extra
 parameter to `start`, or via a new `host_now()` import) or move to
-the WASIp1 target. The same applies to `poll_oneoff` — anything that
-needs to sleep, batch on a timer, or rate-limit belongs in
-[`../wasip1/`](../wasip1/).
+the WASIp1 target.
+
+Pacing is *not* on this list of constraints — `host.interruptibleSleep`
+is a host import, not WASI plumbing, so freestanding plugins can loop
+and pace exactly like wasip1 plugins do (and unwind on shutdown the
+same way). What still belongs in [`../wasip1/`](../wasip1/) are uses
+of `poll_oneoff` proper: multiplexing readiness across file
+descriptors, signalfd-style waits, etc.
 
 ## Entrypoint
 

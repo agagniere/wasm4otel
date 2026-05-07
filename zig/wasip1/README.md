@@ -18,9 +18,12 @@ surface includes:
 
 - **Real clocks** — `std.Io.Clock.now(.real, io)` and
   `Clock.now(.monotonic, io)` resolve via `clock_time_get`.
-- **Sleep / timers / poll** — anything routing through
-  `poll_oneoff`. Required for batch flush intervals, rate limiting,
-  retry backoff.
+- **`poll_oneoff`-backed multiplexing** — waiting on multiple file
+  descriptors, deadlines, or readiness events. Note: simple pacing
+  (sleep N seconds, unwind on shutdown) is provided by the
+  `host.interruptibleSleep` import and works in freestanding too;
+  reach for `poll_oneoff` only when you genuinely need its
+  multi-subscription semantics.
 - **Stdout / stderr** — `fd_write` to fds 1 and 2. Useful as a
   fallback logger when running under `wasmtime` for tests.
 - **Filesystem I/O** — `std.fs.*` against any directory the host

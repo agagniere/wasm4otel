@@ -18,11 +18,12 @@ The contract between Go and the guest is defined imperatively in `go/wasm_otel_c
 Host imports exposed in the `env` module (called from the guest):
 - `host_log(level: i32, ptr, size)` — level matches `go.uber.org/zap/zapcore.Level` (debug=-1, info=0, …). The Zig side mirrors this in `zig/src/log.zig`'s `LogLevel` enum.
 - `push_logs(ptr, size) -> i32` — bytes are an OTLP-encoded `LogsData` protobuf. Returns 0 on success, non-zero error code otherwise (1 = bad memory read, 2 = decode failure, 3 = no downstream consumer).
+- `interruptible_sleep_ms(ms: u32) -> u32` — sleeps for up to `ms` milliseconds. Returns 0 when the duration elapsed, non-zero when the component's context fires (Shutdown). The Zig wrapper in `zig/src/host.zig` (`host` module) surfaces this as `interruptibleSleep(std.Io.Duration) error{Interrupted}!void`. Works in both freestanding and wasip1 — does not depend on any WASI plumbing.
 - `push_metrics` / `push_traces` are stubbed in the Go side and not yet wired.
 
 Guest exports the host calls:
-- `start()` — invoked from `Start(ctx, host)`. The log generator does its work synchronously here.
-- `stop()` — invoked from `Shutdown(ctx)`.
+- `start()` — invoked from `Start(ctx, host)` on a dedicated goroutine, so a long-running loop doesn't block collector startup.
+- `stop()` — invoked from `Shutdown(ctx)` only after `start`'s goroutine drains.
 - `_initialize` (WASI reactor) or `_start` (command / freestanding) — the plugin code declares one or the other; wasm-ld requires whichever the `wasi_exec_model` selected. `LoadPlugin` passes both names to `ModuleConfig.WithStartFunctions(...)` and wazero calls whichever is present.
 - `capabilities`, `consume_logs`, `consume_metrics`, `consume_traces` — looked up by the host but not yet called; reserved for processor/exporter-style plugins.
 

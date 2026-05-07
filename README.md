@@ -39,10 +39,11 @@ single `.wasm` module. For now it can only be a receiver:
 The host (Go, in `go/`) exposes a small set of imports the guest can
 call to **push** telemetry into the next consumer:
 
-| Import       | Purpose                                                              |
-| ------------ | -------------------------------------------------------------------- |
-| `host_log`   | Send a log line to the collector's own logger (zap levels).          |
-| `push_logs`  | Hand an OTLP-encoded `LogsData` protobuf to the next consumer.       |
+| Import                   | Purpose                                                                   |
+|--------------------------|---------------------------------------------------------------------------|
+| `host_log`               | Send a log line to the collector's own logger (zap levels).               |
+| `push_logs`              | Hand an OTLP-encoded `LogsData` protobuf to the next consumer.            |
+| `interruptible_sleep_ms` | Sleep at most N ms; returns non-zero when the component is shutting down. |
 
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume — `consume_logs`,
