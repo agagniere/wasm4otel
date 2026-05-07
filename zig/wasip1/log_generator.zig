@@ -62,7 +62,7 @@ export fn start() void {
             std.log.err("Failed to send", .{});
         };
 
-        if (i + 1 < ticks) host.interruptibleSleep(10) catch |err| {
+        if (i + 1 < ticks) host.interruptibleSleep(.fromSeconds(10)) catch |err| {
             std.log.info("Loop interrupted: {t}", .{err});
             break;
         };

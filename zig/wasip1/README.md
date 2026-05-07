@@ -85,7 +85,7 @@ while (running) {
     try pushLogs(alloc, logs);
     // No `logs.deinit(alloc)` — the literals inside would corrupt
     // the underlying allocator. `arena.reset` releases everything.
-    try host.interruptibleSleep(2);
+    try host.interruptibleSleep(.fromSeconds(2));
 }
 ```
 

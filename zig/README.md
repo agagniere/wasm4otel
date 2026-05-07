@@ -204,14 +204,18 @@ The internal `LogLevel` enum mirrors zap's levels (debug=-1, info=0,
 ### `host` (`src/host.zig`)
 
 Wrappers over host-provided primitives that aren't OTLP plumbing. Today:
-`interruptibleMilliSleep(u32)` and `interruptibleSleep(u16)`, which
-call the host's `interruptible_sleep_ms` import and turn a non-zero
-return into `error.Interrupted` — the host returns non-zero when the
-component's context fires (e.g. on `Shutdown`), giving plugins a
-graceful, sub-millisecond unwind path that doesn't depend on
-`WithSysNanosleep` or any WASI plumbing. Works in both `freestanding`
-and `wasip1` targets since it's just a function in the host's `env`
-module.
+`interruptibleSleep(std.Io.Duration)`, which calls the host's
+`interruptible_sleep_ms` import and turns a non-zero return into
+`error.Interrupted`. The host returns non-zero when the component's
+context fires (e.g. on `Shutdown`), giving plugins a graceful,
+sub-millisecond unwind path that doesn't depend on `WithSysNanosleep`
+or any WASI plumbing. Works in both `freestanding` and `wasip1`
+targets — it's just a function in the host's `env` module.
+
+```zig
+try host.interruptibleSleep(.fromSeconds(2));
+try host.interruptibleSleep(.fromMilliseconds(250));
+```
 
 `hostlog` may eventually fold in here.
 
