@@ -116,9 +116,15 @@ plugins instantiate the same way from the host's point of view.
   fixed number of times with `io.sleep(...)` between batches. The
   sleep only pauses for real if the host wires
   `WithSysNanosleep()`; otherwise it returns immediately and the
-  loop bursts through. Because the host's `start.Call(...)` is
-  synchronous, the whole loop blocks `Start()` — turning this into
-  a real receiver requires running it on a goroutine host-side.
+  loop bursts through. The host runs `start.Call(...)` on a
+  dedicated goroutine, so the loop doesn't block collector startup;
+  `Shutdown` cancels the component's context (which surfaces as
+  `Cancelable.Canceled` out of the next host import — the existing
+  `catch |err| break` on `io.sleep` is the unwind hook), waits for
+  the goroutine to drain, then calls `stop`. With the default
+  wazero `WithSysNanosleep` (Go's `time.Sleep`, not ctx-aware),
+  cancellation is observed only once the in-flight sleep elapses
+  — so the worst-case shutdown latency is one sleep interval.
 - **`severity_parser.zig`** — small textual-severity → OTLP
   `SeverityNumber` parser with `test {}` blocks. Demonstrates the
   `zig build test -fwasmtime` flow; see the *Tests* section of

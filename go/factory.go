@@ -29,12 +29,12 @@ func NewFactory() otel_receiver.Factory {
 }
 
 func createLogs(
-	context std_context.Context,
+	_ std_context.Context,
 	settings otel_receiver.Settings,
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_receiver.Logs, error) {
-	component, err := NewWasmOtelComponent(context, anyconfig, settings.Logger)
+	component, err := NewWasmOtelComponent(anyconfig, settings.Logger)
 	if err != nil {
 		return nil, err
 	}

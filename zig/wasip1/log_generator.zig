@@ -45,7 +45,7 @@ export fn start() void {
     var threaded: Io.Threaded = .init_single_threaded;
     const io = threaded.io();
 
-    const interval: Io.Duration = .fromSeconds(2);
+    const interval: Io.Duration = .fromSeconds(10);
     const ticks = 5;
 
     for (0..ticks) |i| {

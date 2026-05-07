@@ -48,8 +48,10 @@ receivers:
 `createLogs` in `factory.go` runs three steps when the collector
 builds the pipeline:
 
-1. `NewWasmOtelComponent` — validates config, opens a cancellable
-   context, creates a wazero runtime, instantiates
+1. `NewWasmOtelComponent` — validates config, derives a cancellable
+   context **from `context.Background()`** (deliberately *not* the
+   framework's create-phase ctx, which can be cancelled the moment
+   `createLogs` returns), creates a wazero runtime, instantiates
    `wasi_snapshot_preview1`.
 2. `ExposeFunctionsToGuest` — registers an `env` host module
    exporting `host_log` and `push_logs`.
@@ -58,9 +60,12 @@ builds the pipeline:
    exported functions: `start`, `stop`, `capabilities`,
    `consume_logs`, `consume_metrics`, `consume_traces`.
 
-After construction, the next consumer is stored on the component and
-the collector calls `Start` (which invokes the plugin's `start`) and
-later `Shutdown` (which invokes `stop` and cancels the context).
+After construction, the next consumer is stored on the component.
+`Start` spawns a goroutine that calls the plugin's `start`, then
+returns immediately so collector startup proceeds. `Shutdown`
+cancels the component's context (so any blocking host import the
+guest is in unwinds with `Cancelable.Canceled`), waits for the
+`start` goroutine to drain, then calls the plugin's `stop`.
 
 ## ABI strings used in this code
 

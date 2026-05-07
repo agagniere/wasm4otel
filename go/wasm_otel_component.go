@@ -5,6 +5,7 @@ import (
 	std_fmt "fmt"
 	std_io "io"
 	std_os "os"
+	std_sync "sync"
 
 	uber_zap "go.uber.org/zap"
 	uber_zapcore "go.uber.org/zap/zapcore"
@@ -28,6 +29,7 @@ type WasmOtelComponent struct {
 	runtime          wazero.Runtime
 	start            wazero_api.Function
 	stop             wazero_api.Function
+	startWg          std_sync.WaitGroup
 
 	capabilities     wazero_api.Function
 	consumeLogs      wazero_api.Function
@@ -37,7 +39,6 @@ type WasmOtelComponent struct {
 }
 
 func NewWasmOtelComponent(
-	context std_context.Context,
 	anyconfig otel_component.Config,
 	logger *uber_zap.Logger,
 ) (WasmOtelComponent, error) {
@@ -47,7 +48,9 @@ func NewWasmOtelComponent(
 		return WasmOtelComponent{}, err
 	}
 	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path)
-	context, cancel := std_context.WithCancel(context)
+	// Detach from the framework's create-phase ctx — the component
+	// owns its own cancellation, ended only by Shutdown via `cancel`.
+	context, cancel := std_context.WithCancel(std_context.Background())
 	runtime := newRuntime(context)
 	return WasmOtelComponent{
 		logger:  hostLogger,
@@ -103,18 +106,31 @@ func (self *WasmOtelComponent) outboundLogs(
 	return 0
 }
 
-func (self *WasmOtelComponent) Start(context std_context.Context, host otel_component.Host) error {
-	if self.start != nil {
-		self.start.Call(context)
+func (self *WasmOtelComponent) Start(_ std_context.Context, _ otel_component.Host) error {
+	if self.start == nil {
+		return nil
 	}
+	self.startWg.Add(1)
+	go func() {
+		defer self.startWg.Done()
+		if _, err := self.start.Call(self.context); err != nil {
+			self.guestLogger.Warnw("start returned with error", "error", err)
+		}
+	}()
 	return nil
 }
 
 func (self *WasmOtelComponent) Shutdown(context std_context.Context) error {
-	if self.stop != nil {
-		self.stop.Call(context)
-	}
+	// Cancel the plugin's context first so any blocking host import
+	// (poll_oneoff, push_logs) returns Cancelable.Canceled to the guest;
+	// the plugin's start loop unwinds on its own, then we wait.
 	self.cancel()
+	self.startWg.Wait()
+	if self.stop != nil {
+		if _, err := self.stop.Call(context); err != nil {
+			self.guestLogger.Warnw("stop returned with error", "error", err)
+		}
+	}
 	return nil
 }
 
