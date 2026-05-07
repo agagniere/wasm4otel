@@ -5,25 +5,18 @@ module with **no WASI imports**. The host loads them the same way as
 WASIp1 plugins, but the wasm side has no operating system to call into.
 
 See [`../README.md`](../README.md) for the build system and shared
-modules. This document covers what the freestanding target buys and
-what it costs.
+modules. This document covers the freestanding target in particular.
 
 ## When to use this target
 
-Pick `freestanding` when the plugin's work is pure computation over
-the bytes the host hands in, and the only outside-world interaction it
-needs goes through the host imports declared in the `env` module
-(`host_log`, `push_logs`, etc.).
+The interest of the freestanding target in the context of OpenTelemetry
+collector components is quite limited: no system calls means no access
+to external ressources like files, network, clocks.
 
-Reasons to prefer it over `wasip1`:
+Only pure processors could realistically want to use this target.
 
-- **Smaller binaries.** No WASI runtime, no libc-shaped glue.
-- **No determinism gotchas.** Without clocks/random, there is nothing
-  for wazero to default to a fixed value (see
-  [`../../go/WAZERO.md`](../../go/WAZERO.md) — defaults that bite
-  WASIp1 don't apply here).
-- **Simpler ABI surface.** The only imports are the ones explicitly
-  declared with `extern fn`.
+Currently it is only used for learning purposes and as a way to better
+illustrate the benefits of WASI in contrast.
 
 Two examples live here:
 
