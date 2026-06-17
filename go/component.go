@@ -267,8 +267,12 @@ func (self *Component) LoadPlugin() error {
 	self.consumeLogs = instance.ExportedFunction("consume_logs")
 	self.consumeMetrics = instance.ExportedFunction("consume_metrics")
 	self.consumeTraces = instance.ExportedFunction("consume_traces")
-	self.alloc = instance.ExportedFunction("alloc")
-	self.free = instance.ExportedFunction("free")
+	// Names are prefixed because Rust + wasm32-wasi links wasi-libc,
+	// which already defines `free`; an unprefixed export collides at
+	// link time. The Zig path doesn't link libc and would survive
+	// either name, but we use the same names everywhere for symmetry.
+	self.alloc = instance.ExportedFunction("wasm4otel_alloc")
+	self.free = instance.ExportedFunction("wasm4otel_free")
 	return nil
 }
 
@@ -322,7 +326,7 @@ func (self *Component) callConsume(
 		return 0, std_errors.New("wasm4otel: guest does not export the requested consume function")
 	}
 	if self.alloc == nil || self.free == nil {
-		return 0, std_errors.New("wasm4otel: guest does not export alloc/free")
+		return 0, std_errors.New("wasm4otel: guest does not export wasm4otel_alloc/wasm4otel_free")
 	}
 	size := uint64(len(payload))
 	if size == 0 {

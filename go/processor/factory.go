@@ -41,7 +41,7 @@ func createLogs(
 		return nil, err
 	}
 	if !component.HasConsumeLogs() {
-		return nil, std_errors.New("wasm4otel processor: plugin must export consume_logs, alloc, and free")
+		return nil, std_errors.New("wasm4otel processor: plugin must export consume_logs, wasm4otel_alloc, and wasm4otel_free")
 	}
 	component.NextConsumerLogs = nextConsumer
 	return component, nil
