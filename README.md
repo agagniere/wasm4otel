@@ -181,10 +181,16 @@ For what each side of *this* project supports:
 - Extend processor/exporter wiring to `consume_metrics` /
   `consume_traces` and add the matching `push_metrics` / `push_traces`
   host imports.
+- Pass `plugin_config` from collector YAML through to the guest.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
+- Use [arcjet/gravity](https://github.com/arcjet/gravity) to load
+  WASI Components on wazero by transpiling them to wasip1 plugins,
+  unblocking the Component Model migration before wazero supports
+  components natively.
 - Switch wazero from interpreter mode to the optimizing compiler.
-- Pass `plugin_config` from collector YAML through to the guest.
+- Share a single wazero runtime across all `Component` instances
+  instead of one runtime per plugin.
 
 ## Acknowledgements
 

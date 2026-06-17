@@ -56,7 +56,8 @@ From the shared `wasm4otel` package:
 - `DefaultConfig() component.Config` — supplies an empty `Config`.
 - `Component` — the host-side type each factory builds and returns;
   satisfies `receiver.Logs`, `processor.Logs`, and `exporter.Logs`
-  depending on which mode the factory set on it.
+  depending on the `ComponentMode` the factory passed to
+  `NewComponent`.
 - `ComponentMode` — `ModeReceiver` / `ModeProcessor` / `ModeExporter`.
 
 ## Configuration
