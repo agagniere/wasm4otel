@@ -21,7 +21,7 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-type WasmOtelComponent struct {
+type Component struct {
 	logger           *uber_zap.SugaredLogger
 	guestLogger      *uber_zap.SugaredLogger
 	context          std_context.Context
@@ -36,24 +36,24 @@ type WasmOtelComponent struct {
 	consumeLogs      wazero_api.Function
 	consumeMetrics   wazero_api.Function
 	consumeTraces    wazero_api.Function
-	nextConsumerLogs otel_consumer.Logs
+	NextConsumerLogs otel_consumer.Logs
 }
 
-func NewWasmOtelComponent(
+func NewComponent(
 	anyconfig otel_component.Config,
 	logger *uber_zap.Logger,
-) (WasmOtelComponent, error) {
+) (*Component, error) {
 	hostLogger := logger.Sugar()
 	config := anyconfig.(Config)
 	if err := config.Validate(); err != nil {
-		return WasmOtelComponent{}, err
+		return nil, err
 	}
 	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path)
 	// Detach from the framework's create-phase ctx — the component
 	// owns its own cancellation, ended only by Shutdown via `cancel`.
 	context, cancel := std_context.WithCancel(std_context.Background())
 	runtime := newRuntime(context)
-	return WasmOtelComponent{
+	return &Component{
 		logger:  hostLogger,
 		context: context,
 		cancel:  cancel,
@@ -70,7 +70,7 @@ func newRuntime(context std_context.Context) wazero.Runtime {
 
 // Provide a callback accessible from the guest to log
 // and functions to push logs/metrics/traces to the next consumer
-func (self *WasmOtelComponent) ExposeFunctionsToGuest() error {
+func (self *Component) ExposeFunctionsToGuest() error {
 	self.guestLogger = self.logger.With("plugin", self.config.Path)
 	_, err := self.runtime.NewHostModuleBuilder("env").
 		NewFunctionBuilder().WithFunc(self.logToZap).Export("host_log").
@@ -82,7 +82,7 @@ func (self *WasmOtelComponent) ExposeFunctionsToGuest() error {
 	return err
 }
 
-func (self *WasmOtelComponent) outboundLogs(
+func (self *Component) outboundLogs(
 	_ std_context.Context,
 	module wazero_api.Module,
 	offset uint32,
@@ -99,16 +99,16 @@ func (self *WasmOtelComponent) outboundLogs(
 		self.guestLogger.Errorw("Unable to deserialize logs", "size", size, "error", err)
 		return 2
 	}
-	if self.nextConsumerLogs == nil {
+	if self.NextConsumerLogs == nil {
 		self.guestLogger.Error("Plugin is pushing logs to a dead-end")
 		return 3
 	}
-	self.nextConsumerLogs.ConsumeLogs(self.context, logs)
+	self.NextConsumerLogs.ConsumeLogs(self.context, logs)
 	self.guestLogger.Infow("OK", "bytes", size)
 	return 0
 }
 
-func (self *WasmOtelComponent) Start(_ std_context.Context, _ otel_component.Host) error {
+func (self *Component) Start(_ std_context.Context, _ otel_component.Host) error {
 	if self.start == nil {
 		return nil
 	}
@@ -122,7 +122,7 @@ func (self *WasmOtelComponent) Start(_ std_context.Context, _ otel_component.Hos
 	return nil
 }
 
-func (self *WasmOtelComponent) Shutdown(context std_context.Context) error {
+func (self *Component) Shutdown(context std_context.Context) error {
 	// Cancel the plugin's context first so any blocking host import
 	// (poll_oneoff, push_logs) returns Cancelable.Canceled to the guest;
 	// the plugin's start loop unwinds on its own, then we wait.
@@ -139,7 +139,7 @@ func (self *WasmOtelComponent) Shutdown(context std_context.Context) error {
 // interruptibleSleepMs blocks for `ms` milliseconds, returning early
 // when the component's context is cancelled (i.e. Shutdown ran).
 // Returns 0 on full elapse, 1 on early wake-up.
-func (self *WasmOtelComponent) interruptibleSleepMs(_ std_context.Context, ms uint32) uint32 {
+func (self *Component) interruptibleSleepMs(_ std_context.Context, ms uint32) uint32 {
 	select {
 	case <-std_time.After(std_time.Duration(ms) * std_time.Millisecond):
 		return 0
@@ -148,7 +148,7 @@ func (self *WasmOtelComponent) interruptibleSleepMs(_ std_context.Context, ms ui
 	}
 }
 
-func (self *WasmOtelComponent) logToZap(_ std_context.Context, module wazero_api.Module, level int32, offset uint32, size uint32) {
+func (self *Component) logToZap(_ std_context.Context, module wazero_api.Module, level int32, offset uint32, size uint32) {
 	buffer, ok := module.Memory().Read(offset, size)
 	if !ok {
 		self.guestLogger.Errorf("Unable to read (%d, %d) from memory", offset, size)
@@ -157,7 +157,7 @@ func (self *WasmOtelComponent) logToZap(_ std_context.Context, module wazero_api
 	self.guestLogger.Log(uber_zapcore.Level(level), string(buffer))
 }
 
-func (self *WasmOtelComponent) LoadPlugin() error {
+func (self *Component) LoadPlugin() error {
 	plugin, err := std_os.Open(self.config.Path)
 	if err != nil {
 		self.logger.Errorw("Unable to open file",
