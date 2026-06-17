@@ -126,6 +126,7 @@ const OtelPlugin = struct {
 const freestanding_sources: []const OtelPlugin = &.{
     .{ .filename = "helloworld.zig", .symbols = &.{ "start", "stop" } },
     .{ .filename = "one_log.zig", .symbols = &.{"start"} },
+    .{ .filename = "severity_filter.zig", .symbols = &.{ "consume_logs", "wasm4otel_alloc", "wasm4otel_free" } },
 };
 
 const wasip1_sources: []const OtelPlugin = &.{
