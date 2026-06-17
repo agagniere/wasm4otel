@@ -27,11 +27,10 @@ func createLogs(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_receiver.Logs, error) {
-	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger)
+	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger, wasm4otel.ModeReceiver)
 	if err != nil {
 		return nil, err
 	}
-	component.Mode = wasm4otel.ModeReceiver
 	if err = component.ExposeFunctionsToGuest(); err != nil {
 		return nil, err
 	}

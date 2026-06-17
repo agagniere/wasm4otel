@@ -23,7 +23,7 @@ import (
 )
 
 // ComponentMode selects the lifecycle a Component runs under. It is
-// set by the role-specific factory immediately after NewComponent.
+// supplied by the role-specific factory as a NewComponent argument.
 type ComponentMode uint8
 
 const (
@@ -39,7 +39,7 @@ const (
 )
 
 type Component struct {
-	Mode ComponentMode
+	mode ComponentMode
 
 	logger      *uber_zap.SugaredLogger
 	guestLogger *uber_zap.SugaredLogger
@@ -74,6 +74,7 @@ type Component struct {
 func NewComponent(
 	anyconfig otel_component.Config,
 	logger *uber_zap.Logger,
+	mode ComponentMode,
 ) (*Component, error) {
 	hostLogger := logger.Sugar()
 	config := anyconfig.(Config)
@@ -86,6 +87,7 @@ func NewComponent(
 	context, cancel := std_context.WithCancel(std_context.Background())
 	runtime := newRuntime(context)
 	return &Component{
+		mode:    mode,
 		logger:  hostLogger,
 		context: context,
 		cancel:  cancel,
@@ -144,7 +146,7 @@ func (self *Component) Start(_ std_context.Context, _ otel_component.Host) error
 	if self.start == nil {
 		return nil
 	}
-	switch self.Mode {
+	switch self.mode {
 	case ModeReceiver:
 		// Long-running loop owns the instance until Shutdown cancels it.
 		// Runs without callMu — the goroutine effectively holds the
@@ -175,7 +177,7 @@ func (self *Component) Shutdown(context std_context.Context) error {
 	// then we wait. Processor/exporter modes have no goroutine to wait
 	// on, so the Wait is a no-op there.
 	self.cancel()
-	if self.Mode == ModeReceiver {
+	if self.mode == ModeReceiver {
 		self.startWg.Wait()
 	}
 	if self.stop != nil {

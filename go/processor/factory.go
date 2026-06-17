@@ -28,11 +28,10 @@ func NewFactory() otel_processor.Factory {
 // alloc/free pair the consume path always needs. The caller adds the
 // signal-specific consume_<signal> check on top.
 func loadComponent(anyconfig otel_component.Config, settings otel_processor.Settings) (*wasm4otel.Component, error) {
-	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger)
+	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger, wasm4otel.ModeProcessor)
 	if err != nil {
 		return nil, err
 	}
-	component.Mode = wasm4otel.ModeProcessor
 	if err = component.ExposeFunctionsToGuest(); err != nil {
 		return nil, err
 	}
