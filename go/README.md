@@ -94,11 +94,14 @@ Every role's `createLogs` runs the same three setup steps:
 The role package then:
 
 - Sets `component.Mode` to the matching `ComponentMode`.
-- Validates the exports the role needs (`start` for receiver;
-  `consume_logs` + `wasm4otel_alloc` + `wasm4otel_free` via
-  `Component.HasConsumeLogs()` for processor/exporter on the logs
-  signal). A wrong-role wiring fails here, at collector startup, with
-  a clear error.
+- Validates the exports the role needs. For processor/exporter, the
+  check is split: `Component.HasAllocFree()` covers the signal-
+  independent allocator pair (a guest missing them is genuinely
+  incomplete), and signal-specific predicates like
+  `Component.HasConsumeLogs()` cover the per-pipeline export (a guest
+  missing one is fine — it just doesn't speak that signal). Receiver
+  mode needs neither check; it only needs `start`. A wrong-role
+  wiring fails here, at collector startup, with a clear error.
 - Stores the downstream consumer in `component.NextConsumerLogs`
   (receiver and processor only — the exporter is terminal).
 
