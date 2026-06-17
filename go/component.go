@@ -2,6 +2,7 @@ package wasm4otel
 
 import (
 	std_context "context"
+	std_errors "errors"
 	std_fmt "fmt"
 	std_io "io"
 	std_os "os"
@@ -21,22 +22,53 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-type Component struct {
-	logger           *uber_zap.SugaredLogger
-	guestLogger      *uber_zap.SugaredLogger
-	context          std_context.Context
-	cancel           std_context.CancelFunc
-	config           Config
-	runtime          wazero.Runtime
-	start            wazero_api.Function
-	stop             wazero_api.Function
-	startWg          std_sync.WaitGroup
+// ComponentMode selects the lifecycle a Component runs under. It is
+// set by the role-specific factory immediately after NewComponent.
+type ComponentMode uint8
 
-	capabilities     wazero_api.Function
-	consumeLogs      wazero_api.Function
-	consumeMetrics   wazero_api.Function
-	consumeTraces    wazero_api.Function
+const (
+	// ModeReceiver: start() drives a long-running loop on its own
+	// goroutine; Shutdown cancels the context and joins it.
+	ModeReceiver ComponentMode = iota
+	// ModeProcessor: start() is a short-lived init; pipeline goroutines
+	// drive the guest via ConsumeLogs/Metrics/Traces.
+	ModeProcessor
+	// ModeExporter: same lifecycle as ModeProcessor, but no downstream
+	// consumer is wired — push_logs from the guest goes nowhere.
+	ModeExporter
+)
+
+type Component struct {
+	Mode ComponentMode
+
+	logger      *uber_zap.SugaredLogger
+	guestLogger *uber_zap.SugaredLogger
+	context     std_context.Context
+	cancel      std_context.CancelFunc
+	config      Config
+	runtime     wazero.Runtime
+	instance    wazero_api.Module
+
+	start          wazero_api.Function
+	stop           wazero_api.Function
+	consumeLogs    wazero_api.Function
+	consumeMetrics wazero_api.Function
+	consumeTraces  wazero_api.Function
+	alloc          wazero_api.Function
+	free           wazero_api.Function
+
 	NextConsumerLogs otel_consumer.Logs
+
+	startWg std_sync.WaitGroup
+
+	// callMu serializes every Call() into the wasm instance. wazero's
+	// Module.Call is single-occupant; without this two pipeline
+	// goroutines could race on a shared linear memory.
+	callMu std_sync.Mutex
+	// broken latches once any guest Call() traps. wazero leaves the
+	// instance in an undefined state after a trap, so we refuse further
+	// entries instead of compounding the corruption.
+	broken bool
 }
 
 func NewComponent(
@@ -112,28 +144,63 @@ func (self *Component) Start(_ std_context.Context, _ otel_component.Host) error
 	if self.start == nil {
 		return nil
 	}
-	self.startWg.Add(1)
-	go func() {
-		defer self.startWg.Done()
-		if _, err := self.start.Call(self.context); err != nil {
+	switch self.Mode {
+	case ModeReceiver:
+		// Long-running loop owns the instance until Shutdown cancels it.
+		// Runs without callMu — the goroutine effectively holds the
+		// instance for its lifetime, and Shutdown waits for it to drain
+		// before calling stop.
+		self.startWg.Add(1)
+		go func() {
+			defer self.startWg.Done()
+			if _, err := self.start.Call(self.context); err != nil {
+				self.guestLogger.Warnw("start returned with error", "error", err)
+			}
+		}()
+	case ModeProcessor, ModeExporter:
+		// Synchronous init; must return promptly so the pipeline can
+		// start delivering batches via ConsumeLogs.
+		if _, err := self.invoke(self.context, self.start); err != nil {
 			self.guestLogger.Warnw("start returned with error", "error", err)
+			return err
 		}
-	}()
+	}
 	return nil
 }
 
 func (self *Component) Shutdown(context std_context.Context) error {
 	// Cancel the plugin's context first so any blocking host import
-	// (poll_oneoff, push_logs) returns Cancelable.Canceled to the guest;
-	// the plugin's start loop unwinds on its own, then we wait.
+	// (interruptible_sleep_ms, push_logs) returns to the guest with a
+	// cancellation signal; the plugin's start loop unwinds on its own,
+	// then we wait. Processor/exporter modes have no goroutine to wait
+	// on, so the Wait is a no-op there.
 	self.cancel()
-	self.startWg.Wait()
+	if self.Mode == ModeReceiver {
+		self.startWg.Wait()
+	}
 	if self.stop != nil {
-		if _, err := self.stop.Call(context); err != nil {
+		if _, err := self.invoke(context, self.stop); err != nil {
 			self.guestLogger.Warnw("stop returned with error", "error", err)
 		}
 	}
 	return nil
+}
+
+// invoke takes callMu, refuses entry if the instance is poisoned, and
+// latches `broken` if the call traps. Every guest entry except the
+// receiver-mode start loop goes through here.
+func (self *Component) invoke(ctx std_context.Context, fn wazero_api.Function, args ...uint64) ([]uint64, error) {
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	if self.broken {
+		return nil, std_errors.New("wasm4otel: component is poisoned (prior trap)")
+	}
+	results, err := fn.Call(ctx, args...)
+	if err != nil {
+		self.broken = true
+		return nil, err
+	}
+	return results, nil
 }
 
 // interruptibleSleepMs blocks for `ms` milliseconds, returning early
@@ -193,12 +260,112 @@ func (self *Component) LoadPlugin() error {
 		return err
 	}
 
+	self.instance = instance
 	self.start = instance.ExportedFunction("start")
 	self.stop = instance.ExportedFunction("stop")
 
-	self.capabilities = instance.ExportedFunction("capabilities")
 	self.consumeLogs = instance.ExportedFunction("consume_logs")
 	self.consumeMetrics = instance.ExportedFunction("consume_metrics")
 	self.consumeTraces = instance.ExportedFunction("consume_traces")
+	self.alloc = instance.ExportedFunction("alloc")
+	self.free = instance.ExportedFunction("free")
 	return nil
+}
+
+// HasConsumeLogs reports whether the guest exports the full
+// (alloc, free, consume_logs) trio required for processor/exporter mode
+// on the logs signal.
+func (self *Component) HasConsumeLogs() bool {
+	return self.consumeLogs != nil && self.alloc != nil && self.free != nil
+}
+
+// Capabilities satisfies consumer.Logs/Metrics/Traces. We always
+// re-marshal the incoming pdata to bytes before crossing into the
+// guest, so we never mutate the caller's view.
+func (self *Component) Capabilities() otel_consumer.Capabilities {
+	return otel_consumer.Capabilities{MutatesData: false}
+}
+
+// ConsumeLogs marshals the batch to OTLP bytes, hands the bytes to the
+// guest via the alloc → write → consume_logs → free sequence, all under
+// callMu. The guest forwards its transformed batch via the push_logs
+// host import — that path uses NextConsumerLogs, not the return path.
+func (self *Component) ConsumeLogs(ctx std_context.Context, logs otel_logs.Logs) error {
+	serializer := otel_logs.ProtoMarshaler{}
+	payload, err := serializer.MarshalLogs(logs)
+	if err != nil {
+		return std_fmt.Errorf("marshal logs: %w", err)
+	}
+	rc, err := self.callConsume(ctx, self.consumeLogs, payload)
+	if err != nil {
+		self.guestLogger.Errorw("consume_logs failed", "error", err, "bytes", len(payload))
+		return err
+	}
+	if rc != 0 {
+		self.guestLogger.Warnw("consume_logs returned non-zero", "rc", rc, "bytes", len(payload))
+		return std_fmt.Errorf("guest consume_logs returned %d", rc)
+	}
+	return nil
+}
+
+// callConsume runs the per-batch sequence: alloc a guest-side buffer,
+// write the payload into it, invoke the consume_* export, free the
+// buffer. Holds callMu for the whole sequence — wazero modules are
+// single-occupant and a partial sequence must not race with anything
+// else entering the instance.
+func (self *Component) callConsume(
+	ctx std_context.Context,
+	fn wazero_api.Function,
+	payload []byte,
+) (uint32, error) {
+	if fn == nil {
+		return 0, std_errors.New("wasm4otel: guest does not export the requested consume function")
+	}
+	if self.alloc == nil || self.free == nil {
+		return 0, std_errors.New("wasm4otel: guest does not export alloc/free")
+	}
+	size := uint64(len(payload))
+	if size == 0 {
+		return 0, nil
+	}
+
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	if self.broken {
+		return 0, std_errors.New("wasm4otel: component is poisoned (prior trap)")
+	}
+
+	allocRes, err := self.alloc.Call(ctx, size)
+	if err != nil {
+		self.broken = true
+		return 0, std_fmt.Errorf("alloc trapped: %w", err)
+	}
+	ptr := uint32(allocRes[0])
+	if ptr == 0 {
+		// Guest signalled OOM; no buffer to free.
+		return 0, std_fmt.Errorf("guest alloc returned 0 for %d bytes", size)
+	}
+
+	if !self.instance.Memory().Write(ptr, payload) {
+		// Shouldn't happen if alloc succeeded; still try to release.
+		if _, ferr := self.free.Call(ctx, uint64(ptr), size); ferr != nil {
+			self.broken = true
+		}
+		return 0, std_fmt.Errorf("memory write out of range: ptr=%d size=%d", ptr, size)
+	}
+
+	consumeRes, err := fn.Call(ctx, uint64(ptr), size)
+	if err != nil {
+		// Don't try to free — instance state is undefined after a trap.
+		self.broken = true
+		return 0, std_fmt.Errorf("consume trapped: %w", err)
+	}
+	rc := uint32(consumeRes[0])
+
+	if _, err := self.free.Call(ctx, uint64(ptr), size); err != nil {
+		self.broken = true
+		return rc, std_fmt.Errorf("free trapped (rc=%d): %w", rc, err)
+	}
+
+	return rc, nil
 }
