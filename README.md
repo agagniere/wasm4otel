@@ -8,11 +8,11 @@ OpenTelemetry Collector components as **WebAssembly plugins**.
 - **Security**: Wasm plugins can only access what the host allowed them to access
 
 > :warning: **Status: proof of concept.** The host/guest ABI is hand-rolled.
-> The **logs** signal is wired for all three roles (receiver, processor,
-> exporter) on the host side; metrics and traces remain sketched but
-> not wired. The Zig template tree ships a receiver example today; a
-> processor/exporter template that exports `consume_logs` is the next
-> Zig-side change. APIs will change.
+> The **logs** signal is wired end-to-end for all three roles (receiver,
+> processor, exporter); metrics and traces remain sketched but not
+> wired. The Zig template tree covers both a receiver
+> (`wasip1/log_generator.zig`) and a processor
+> (`freestanding/severity_filter.zig`). APIs will change.
 
 ## How it fits together
 
@@ -152,8 +152,9 @@ In any wasm-capable language:
 5. Compile to `wasm32-wasi` (reactor) or `wasm32-freestanding`.
 
 The Zig examples in `zig/freestanding/` and `zig/wasip1/` are intended
-to be readable templates. They currently cover the receiver path; a
-processor/exporter template is the next Zig-side change.
+to be readable templates — `wasip1/log_generator.zig` covers the
+receiver path; `freestanding/severity_filter.zig` covers the processor
+path including the `wasm4otel_alloc` / `wasm4otel_free` exports.
 
 ## Reference docs
 
@@ -180,9 +181,6 @@ For what each side of *this* project supports:
 - Extend processor/exporter wiring to `consume_metrics` /
   `consume_traces` and add the matching `push_metrics` / `push_traces`
   host imports.
-- Ship a Zig processor template that exports `consume_logs`,
-  `wasm4otel_alloc`, `wasm4otel_free`, and re-publishes filtered /
-  enriched batches via `push_logs`.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
 - Switch wazero from interpreter mode to the optimizing compiler.
