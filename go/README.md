@@ -54,11 +54,16 @@ From the shared `wasm4otel` package:
 
 - `Config` — the YAML-mapped config struct.
 - `DefaultConfig() component.Config` — supplies an empty `Config`.
+- `Load(cfg, logger, mode) (*Component, error)` — the one-shot
+  factory entrypoint: builds the component, registers host imports,
+  loads the plugin, and verifies mode-mandatory exports
+  (`wasm4otel_alloc` / `wasm4otel_free` for processor/exporter).
+  Each role's `createLogs` calls this.
 - `Component` — the host-side type each factory builds and returns;
   satisfies `receiver.Logs`, `processor.Logs`, and `exporter.Logs`
-  depending on the `ComponentMode` the factory passed to
-  `NewComponent`.
+  depending on the `ComponentMode` passed to `Load` / `NewComponent`.
 - `ComponentMode` — `ModeReceiver` / `ModeProcessor` / `ModeExporter`.
+  Implements `fmt.Stringer` for use in error messages.
 
 ## Configuration
 
@@ -77,7 +82,8 @@ receivers:
 
 ## Lifecycle
 
-Every role's `createLogs` runs the same three setup steps:
+Every role's `createLogs` calls `wasm4otel.Load(cfg, logger, mode)`,
+which runs the three signal-independent setup steps:
 
 1. `NewComponent` — validates config, derives a cancellable context
    **from `context.Background()`** (deliberately *not* the framework's
@@ -92,17 +98,21 @@ Every role's `createLogs` runs the same three setup steps:
    `stop`, `consume_logs`, `consume_metrics`, `consume_traces`,
    `wasm4otel_alloc`, `wasm4otel_free`.
 
+`Load` also verifies the signal-independent export contract for the
+mode: for processor/exporter modes it checks `HasAllocFree()` and
+returns a "wasm4otel <role>: plugin must export wasm4otel_alloc and
+wasm4otel_free" error if missing (a guest without them is genuinely
+incomplete). Receiver mode skips that check — receivers don't consume.
+
 The role package then:
 
-- Sets `component.Mode` to the matching `ComponentMode`.
-- Validates the exports the role needs. For processor/exporter, the
-  check is split: `Component.HasAllocFree()` covers the signal-
-  independent allocator pair (a guest missing them is genuinely
-  incomplete), and signal-specific predicates like
-  `Component.HasConsumeLogs()` cover the per-pipeline export (a guest
-  missing one is fine — it just doesn't speak that signal). Receiver
-  mode needs neither check; it only needs `start`. A wrong-role
-  wiring fails here, at collector startup, with a clear error.
+- Validates the signal-specific export. The processor and exporter
+  `createLogs` call `Component.ValidateLogsExport()`, which checks
+  `HasConsumeLogs()` and returns a "wasm4otel <role>: plugin does not
+  export consume_logs; it does not support the logs signal" error if
+  missing. A guest missing this is fine in general — it just doesn't
+  speak that signal, and should be wired into a different pipeline.
+  Receiver mode skips signal validation; it only needs `start`.
 - Stores the downstream consumer in `component.NextConsumerLogs`
   (receiver and processor only — the exporter is terminal).
 

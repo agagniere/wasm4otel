@@ -38,6 +38,19 @@ const (
 	ModeExporter
 )
 
+func (self ComponentMode) String() string {
+	switch self {
+	case ModeReceiver:
+		return "receiver"
+	case ModeProcessor:
+		return "processor"
+	case ModeExporter:
+		return "exporter"
+	default:
+		return "unknown"
+	}
+}
+
 type Component struct {
 	mode ComponentMode
 
@@ -69,6 +82,33 @@ type Component struct {
 	// instance in an undefined state after a trap, so we refuse further
 	// entries instead of compounding the corruption.
 	broken bool
+}
+
+// Load is the one-shot factory entrypoint: it builds a Component,
+// registers the host imports, loads the plugin from disk, and verifies
+// the exports the mode requires regardless of pipeline signal — today
+// the wasm4otel_alloc / wasm4otel_free pair, skipped for ModeReceiver
+// since receivers don't consume batches. Signal-specific validation
+// (e.g. ValidateLogsExport) is the caller's responsibility.
+func Load(
+	anyconfig otel_component.Config,
+	logger *uber_zap.Logger,
+	mode ComponentMode,
+) (*Component, error) {
+	component, err := NewComponent(anyconfig, logger, mode)
+	if err != nil {
+		return nil, err
+	}
+	if err = component.ExposeFunctionsToGuest(); err != nil {
+		return nil, err
+	}
+	if err = component.LoadPlugin(); err != nil {
+		return nil, err
+	}
+	if mode != ModeReceiver && !component.HasAllocFree() {
+		return nil, std_fmt.Errorf("wasm4otel %s: plugin must export wasm4otel_alloc and wasm4otel_free", mode)
+	}
+	return component, nil
 }
 
 func NewComponent(
@@ -290,6 +330,17 @@ func (self *Component) HasAllocFree() bool {
 // Pair with HasAllocFree to know whether the logs path is wireable.
 func (self *Component) HasConsumeLogs() bool {
 	return self.consumeLogs != nil
+}
+
+// ValidateLogsExport reports whether the guest can serve the logs
+// signal in this component's mode. Used by processor/exporter
+// factories' createLogs hooks; receivers don't consume so they don't
+// call this.
+func (self *Component) ValidateLogsExport() error {
+	if !self.HasConsumeLogs() {
+		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_logs; it does not support the logs signal", self.mode)
+	}
+	return nil
 }
 
 // HasConsumeMetrics reports whether the guest exports consume_metrics.
