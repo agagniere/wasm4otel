@@ -276,11 +276,28 @@ func (self *Component) LoadPlugin() error {
 	return nil
 }
 
-// HasConsumeLogs reports whether the guest exports the full
-// (alloc, free, consume_logs) trio required for processor/exporter mode
-// on the logs signal.
+// HasAllocFree reports whether the guest exports the wasm4otel_alloc /
+// wasm4otel_free pair. They are required by every processor/exporter
+// signal — a guest missing them is genuinely incomplete, not just
+// silent on one signal.
+func (self *Component) HasAllocFree() bool {
+	return self.alloc != nil && self.free != nil
+}
+
+// HasConsumeLogs reports whether the guest exports consume_logs.
+// Pair with HasAllocFree to know whether the logs path is wireable.
 func (self *Component) HasConsumeLogs() bool {
-	return self.consumeLogs != nil && self.alloc != nil && self.free != nil
+	return self.consumeLogs != nil
+}
+
+// HasConsumeMetrics reports whether the guest exports consume_metrics.
+func (self *Component) HasConsumeMetrics() bool {
+	return self.consumeMetrics != nil
+}
+
+// HasConsumeTraces reports whether the guest exports consume_traces.
+func (self *Component) HasConsumeTraces() bool {
+	return self.consumeTraces != nil
 }
 
 // Capabilities satisfies consumer.Logs/Metrics/Traces. We always

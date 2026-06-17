@@ -2,7 +2,7 @@ package wasm4otelprocessor
 
 import (
 	std_context "context"
-	std_errors "errors"
+	std_fmt "fmt"
 
 	otel_component "go.opentelemetry.io/collector/component"
 	otel_consumer "go.opentelemetry.io/collector/consumer"
@@ -12,9 +12,9 @@ import (
 )
 
 // NewFactory returns the OTel processor factory for wasm4otel plugins
-// running in processor mode: the host invokes the guest's consume_logs
+// running in processor mode: the host invokes the guest's consume_<signal>
 // per incoming batch, and the guest forwards its transformed batch
-// downstream via the push_logs host import.
+// downstream via the matching push_<signal> host import.
 func NewFactory() otel_processor.Factory {
 	return otel_processor.NewFactory(
 		otel_component.MustNewType("wasm4otel"),
@@ -23,12 +23,11 @@ func NewFactory() otel_processor.Factory {
 	)
 }
 
-func createLogs(
-	_ std_context.Context,
-	settings otel_processor.Settings,
-	anyconfig otel_component.Config,
-	nextConsumer otel_consumer.Logs,
-) (otel_processor.Logs, error) {
+// loadComponent runs the signal-independent setup every createX shares:
+// instantiate, expose host imports, load the wasm, and verify the
+// alloc/free pair the consume path always needs. The caller adds the
+// signal-specific consume_<signal> check on top.
+func loadComponent(anyconfig otel_component.Config, settings otel_processor.Settings) (*wasm4otel.Component, error) {
 	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger)
 	if err != nil {
 		return nil, err
@@ -40,8 +39,24 @@ func createLogs(
 	if err = component.LoadPlugin(); err != nil {
 		return nil, err
 	}
+	if !component.HasAllocFree() {
+		return nil, std_fmt.Errorf("wasm4otel processor: plugin must export wasm4otel_alloc and wasm4otel_free")
+	}
+	return component, nil
+}
+
+func createLogs(
+	_ std_context.Context,
+	settings otel_processor.Settings,
+	anyconfig otel_component.Config,
+	nextConsumer otel_consumer.Logs,
+) (otel_processor.Logs, error) {
+	component, err := loadComponent(anyconfig, settings)
+	if err != nil {
+		return nil, err
+	}
 	if !component.HasConsumeLogs() {
-		return nil, std_errors.New("wasm4otel processor: plugin must export consume_logs, wasm4otel_alloc, and wasm4otel_free")
+		return nil, std_fmt.Errorf("wasm4otel processor: plugin does not export consume_logs; it does not support the logs signal")
 	}
 	component.NextConsumerLogs = nextConsumer
 	return component, nil
