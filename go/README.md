@@ -89,15 +89,16 @@ Every role's `createLogs` runs the same three setup steps:
    module (which runs `_start` or `_initialize`), stores the instance
    for later memory access, and looks up exported functions: `start`,
    `stop`, `consume_logs`, `consume_metrics`, `consume_traces`,
-   `alloc`, `free`.
+   `wasm4otel_alloc`, `wasm4otel_free`.
 
 The role package then:
 
 - Sets `component.Mode` to the matching `ComponentMode`.
 - Validates the exports the role needs (`start` for receiver;
-  `consume_logs`+`alloc`+`free` via `Component.HasConsumeLogs()` for
-  processor/exporter on the logs signal). A wrong-role wiring fails
-  here, at collector startup, with a clear error.
+  `consume_logs` + `wasm4otel_alloc` + `wasm4otel_free` via
+  `Component.HasConsumeLogs()` for processor/exporter on the logs
+  signal). A wrong-role wiring fails here, at collector startup, with
+  a clear error.
 - Stores the downstream consumer in `component.NextConsumerLogs`
   (receiver and processor only — the exporter is terminal).
 
@@ -109,7 +110,7 @@ and exporter) `ConsumeLogs`/`Capabilities`. Their behavior branches on
 |---------------|-----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
 | `Start`       | Spawns a goroutine that calls `start()`; returns immediately. The goroutine owns the instance until shutdown.   | Calls `start()` synchronously under `callMu`. Must return promptly.           |
 | `Shutdown`    | Cancels the context (so any blocking host import unwinds), waits for the `start` goroutine, then calls `stop()`. | Cancels the context, calls `stop()`. No goroutine to wait for.                |
-| `ConsumeLogs` | Not called.                                                                                                     | Marshals the batch and runs the `alloc → write → consume_logs → free` dance. |
+| `ConsumeLogs` | Not called.                                                                                                     | Marshals the batch and runs the `wasm4otel_alloc → write → consume_logs → wasm4otel_free` dance. |
 
 ## ABI strings used in this code
 
@@ -233,35 +234,37 @@ of the requested sleep duration.
 | `consume_logs`    | Yes for processor/exporter mode. Invoked once per incoming batch from `Component.ConsumeLogs`.                   |
 | `consume_metrics` | Looked up but the matching factory is not registered yet. Reserved.                                              |
 | `consume_traces`  | Looked up but the matching factory is not registered yet. Reserved.                                              |
-| `alloc`           | Yes for processor/exporter mode. Called before each `consume_*` to reserve a buffer in the guest's linear memory. |
-| `free`            | Yes for processor/exporter mode. Called after each `consume_*` to release the buffer.                            |
+| `wasm4otel_alloc` | Yes for processor/exporter mode. Called before each `consume_*` to reserve a buffer in the guest's linear memory. |
+| `wasm4otel_free`  | Yes for processor/exporter mode. Called after each `consume_*` to release the buffer.                            |
 
-### `alloc(size: u32) -> u32`, `free(ptr: u32, size: u32)`
+### `wasm4otel_alloc(size: u32) -> u32`, `wasm4otel_free(ptr: u32, size: u32)`
 
 The host needs a way to put OTLP bytes into the guest's linear memory
 without trampling whatever the guest's allocator is doing. Each
 processor/exporter plugin exports two small functions backed by its
 own allocator (e.g. Zig's `std.heap.wasm_allocator`):
 
-- `alloc(size)` — reserve `size` bytes, return the offset, or `0` on
-  failure. `0` is reserved as a sentinel because no real wasm
-  allocator returns it (linear memory's low region holds `.data` /
-  `.rodata`). The host treats `0` as a non-trapping skip and does
-  **not** call `free` on it.
-- `free(ptr, size)` — release the region. The host passes `size`
-  back so the guest's allocator doesn't need a per-block header.
+- `wasm4otel_alloc(size)` — reserve `size` bytes, return the offset,
+  or `0` on failure. `0` is reserved as a sentinel because no real
+  wasm allocator returns it (linear memory's low region holds `.data`
+  / `.rodata`). The host treats `0` as a non-trapping skip and does
+  **not** call `wasm4otel_free` on it.
+- `wasm4otel_free(ptr, size)` — release the region. The host passes
+  `size` back so the guest's allocator doesn't need a per-block
+  header.
 
-The host's per-batch sequence is `alloc → memory.Write → consume_logs
-→ free`, all under `Component.callMu`. If `consume_logs` traps, the
-host skips `free` (the instance is poisoned and any further call may
-trap again or behave undefined-ly) and latches `Component.broken`.
+The host's per-batch sequence is `wasm4otel_alloc → memory.Write →
+consume_logs → wasm4otel_free`, all under `Component.callMu`. If
+`consume_logs` traps, the host skips `wasm4otel_free` (the instance is
+poisoned and any further call may trap again or behave undefined-ly)
+and latches `Component.broken`.
 
 ### `consume_logs(ptr: i32, size: i32) -> i32`
 
 Invoked once per incoming batch. `(ptr, size)` refers to a buffer the
-host just wrote into the guest's linear memory via `alloc`. The guest
-must not retain the pointer past the call — the host calls `free` as
-soon as `consume_logs` returns. Return code `0` for success, non-zero
+host just wrote into the guest's linear memory via `wasm4otel_alloc`.
+The guest must not retain the pointer past the call — the host calls
+`wasm4otel_free` as soon as `consume_logs` returns. Return code `0` for success, non-zero
 for plugin-side errors; the host surfaces non-zero rcs as a
 `fmt.Errorf` and the framework treats it as a batch failure. A
 processor plugin typically decodes the payload, transforms the batch,

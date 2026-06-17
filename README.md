@@ -56,8 +56,8 @@ call to **push** telemetry into the next consumer:
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume — `consume_logs`,
 `consume_metrics`, `consume_traces`. A processor or exporter plugin
-implements these, plus two small allocator exports `alloc(size) -> ptr`
-and `free(ptr, size)` so the host can hand a batch into the guest's
+implements these, plus two small allocator exports `wasm4otel_alloc(size) -> ptr`
+and `wasm4otel_free(ptr, size)` so the host can hand a batch into the guest's
 linear memory. Lifecycle exports `start()` / `stop()` (called on
 collector startup and shutdown) are optional, and the usual WASI
 `_initialize` or freestanding `_start` entrypoint applies.
@@ -145,7 +145,7 @@ In any wasm-capable language:
    drive your loop (and `stop()` if you need a graceful tear-down hook).
 4. **For a processor or exporter:** export `consume_logs(ptr, size) -> i32`
    so the host can deliver each batch, plus the two allocator exports
-   `alloc(size) -> ptr` and `free(ptr, size)` so the host can write
+   `wasm4otel_alloc(size) -> ptr` and `wasm4otel_free(ptr, size)` so the host can write
    into your linear memory. A processor that wants to forward its
    transformed batch downstream also imports `push_logs` and calls it
    inside `consume_logs`.
@@ -180,8 +180,9 @@ For what each side of *this* project supports:
 - Extend processor/exporter wiring to `consume_metrics` /
   `consume_traces` and add the matching `push_metrics` / `push_traces`
   host imports.
-- Ship a Zig processor template that exports `consume_logs`, `alloc`,
-  `free`, and re-publishes filtered/enriched batches via `push_logs`.
+- Ship a Zig processor template that exports `consume_logs`,
+  `wasm4otel_alloc`, `wasm4otel_free`, and re-publishes filtered /
+  enriched batches via `push_logs`.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
 - Switch wazero from interpreter mode to the optimizing compiler.
