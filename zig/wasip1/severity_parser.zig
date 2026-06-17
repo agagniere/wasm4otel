@@ -13,7 +13,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_info = @import("build_info");
-const host_log = @import("hostlog");
+const host = @import("host");
 const otelData = @import("otel_pipeline_data");
 
 const SeverityNumber = otelData.Logs.SeverityNumber;
@@ -25,7 +25,7 @@ const SeverityNumber = otelData.Logs.SeverityNumber;
 pub const std_options: std.Options = if (builtin.is_test) .{
     .log_level = .debug,
 } else .{
-    .logFn = host_log.logFn,
+    .logFn = host.logFn,
     .log_level = .debug,
 };
 

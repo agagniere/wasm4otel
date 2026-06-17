@@ -1,3 +1,6 @@
+//! This file contains functions that the guest plugins can
+//! export, to allow the host to call them.
+//!
 //! Helpers for plugins acting as processors or exporters: the
 //! `wasm4otel_alloc` and `wasm4otel_free` exports the host calls
 //! around `consume_*`. Plugins re-export the two functions under

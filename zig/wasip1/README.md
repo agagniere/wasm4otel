@@ -147,4 +147,5 @@ const wasip1_sources: []const OtelPlugin = &.{
 ```
 
 `tests = true` opts the source into `zig build test -fwasmtime`.
-Both `hostlog` and `otel_pipeline_data` are wired by default.
+The `host`, `guest`, and `otel_pipeline_data` modules are wired by
+default.

@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const build_info = @import("build_info");
 
 pub const std_options: std.Options = .{
-    .logFn = @import("hostlog").logFn,
+    .logFn = @import("host").logFn,
     .log_level = .debug,
 };
 
