@@ -1,4 +1,4 @@
-package wasm4otel
+package wasm4otelreceiver
 
 import (
 	std_context "context"
@@ -6,24 +6,17 @@ import (
 	otel_component "go.opentelemetry.io/collector/component"
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_receiver "go.opentelemetry.io/collector/receiver"
+
+	wasm4otel "github.com/agagniere/wasm4otel/go"
 )
 
-// The receiver.Factory interface requires the following methods:
-// - CreateTraces
-// - CreateMetrics
-// - CreateLogs
-// - TracesStability
-// - MetricsStability
-// - LogsStability
-// - Type                  // from component.Factory
-// - CreateDefaultConfig   // from component.Factory
-//
-// But it cannot be implemented outside of the receiver package, because it also requires
-// an unexported method, to force us to use receiver.NewFactory
+// NewFactory returns the OTel receiver factory for wasm4otel plugins
+// running in receiver mode: the plugin's start() drives a long-running
+// loop and pushes telemetry via the push_logs host import.
 func NewFactory() otel_receiver.Factory {
 	return otel_receiver.NewFactory(
 		otel_component.MustNewType("wasm4otel"),
-		DefaultConfig,
+		wasm4otel.DefaultConfig,
 		otel_receiver.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
 	)
 }
@@ -34,7 +27,7 @@ func createLogs(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_receiver.Logs, error) {
-	component, err := NewWasmOtelComponent(anyconfig, settings.Logger)
+	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +37,6 @@ func createLogs(
 	if err = component.LoadPlugin(); err != nil {
 		return nil, err
 	}
-	component.nextConsumerLogs = nextConsumer
-	return &component, nil
+	component.NextConsumerLogs = nextConsumer
+	return component, nil
 }
