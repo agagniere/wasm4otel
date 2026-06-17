@@ -8,7 +8,9 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	go.opentelemetry.io/collector/component v1.60.0
 	go.opentelemetry.io/collector/consumer v1.60.0
+	go.opentelemetry.io/collector/exporter v1.60.0
 	go.opentelemetry.io/collector/pdata v1.60.0
+	go.opentelemetry.io/collector/processor v1.60.0
 	go.opentelemetry.io/collector/receiver v1.60.0
 	go.uber.org/zap v1.28.0
 )

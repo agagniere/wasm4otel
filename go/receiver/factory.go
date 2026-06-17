@@ -31,6 +31,7 @@ func createLogs(
 	if err != nil {
 		return nil, err
 	}
+	component.Mode = wasm4otel.ModeReceiver
 	if err = component.ExposeFunctionsToGuest(); err != nil {
 		return nil, err
 	}
