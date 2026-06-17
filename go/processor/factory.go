@@ -2,7 +2,6 @@ package wasm4otelprocessor
 
 import (
 	std_context "context"
-	std_fmt "fmt"
 
 	otel_component "go.opentelemetry.io/collector/component"
 	otel_consumer "go.opentelemetry.io/collector/consumer"
@@ -23,39 +22,18 @@ func NewFactory() otel_processor.Factory {
 	)
 }
 
-// loadComponent runs the signal-independent setup every createX shares:
-// instantiate, expose host imports, load the wasm, and verify the
-// alloc/free pair the consume path always needs. The caller adds the
-// signal-specific consume_<signal> check on top.
-func loadComponent(anyconfig otel_component.Config, settings otel_processor.Settings) (*wasm4otel.Component, error) {
-	component, err := wasm4otel.NewComponent(anyconfig, settings.Logger, wasm4otel.ModeProcessor)
-	if err != nil {
-		return nil, err
-	}
-	if err = component.ExposeFunctionsToGuest(); err != nil {
-		return nil, err
-	}
-	if err = component.LoadPlugin(); err != nil {
-		return nil, err
-	}
-	if !component.HasAllocFree() {
-		return nil, std_fmt.Errorf("wasm4otel processor: plugin must export wasm4otel_alloc and wasm4otel_free")
-	}
-	return component, nil
-}
-
 func createLogs(
 	_ std_context.Context,
 	settings otel_processor.Settings,
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_processor.Logs, error) {
-	component, err := loadComponent(anyconfig, settings)
+	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeProcessor)
 	if err != nil {
 		return nil, err
 	}
-	if !component.HasConsumeLogs() {
-		return nil, std_fmt.Errorf("wasm4otel processor: plugin does not export consume_logs; it does not support the logs signal")
+	if err := component.ValidateLogsExport(); err != nil {
+		return nil, err
 	}
 	component.NextConsumerLogs = nextConsumer
 	return component, nil
