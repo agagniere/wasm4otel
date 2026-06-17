@@ -8,14 +8,22 @@ OpenTelemetry Collector components as **WebAssembly plugins**.
 - **Security**: Wasm plugins can only access what the host allowed them to access
 
 > :warning: **Status: proof of concept.** The host/guest ABI is hand-rolled.
-> Today, only the **logs receiver** path is wired end-to-end; metrics,
-> traces, and the processor/exporter direction are sketched in the
-> host code but not yet functional. APIs will change.
+> The **logs** signal is wired for all three roles (receiver, processor,
+> exporter) on the host side; metrics and traces remain sketched but
+> not wired. The Zig template tree ships a receiver example today; a
+> processor/exporter template that exports `consume_logs` is the next
+> Zig-side change. APIs will change.
 
 ## How it fits together
 
 A wasm4otel component is a Go shim that owns a wazero runtime and a
-single `.wasm` module. For now it can only be a receiver:
+single `.wasm` module. The same shim plays three different roles
+depending on which factory is registered in the collector — receiver
+(plugin pushes telemetry from its own loop), processor (plugin
+transforms each batch handed to it), exporter (plugin terminally
+consumes each batch). The diagram below shows the receiver path; the
+processor and exporter paths flow `consume_logs` into the guest and
+optionally back out via `push_logs`.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -47,14 +55,17 @@ call to **push** telemetry into the next consumer:
 
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume — `consume_logs`,
-`consume_metrics`, `consume_traces`. These are what a processor or
-exporter plugin would implement. Plus lifecycle exports `start()` /
-`stop()` (called on collector startup and shutdown) and the usual
-WASI `_initialize` or freestanding `_start` entrypoint.
+`consume_metrics`, `consume_traces`. A processor or exporter plugin
+implements these, plus two small allocator exports `alloc(size) -> ptr`
+and `free(ptr, size)` so the host can hand a batch into the guest's
+linear memory. Lifecycle exports `start()` / `stop()` (called on
+collector startup and shutdown) are optional, and the usual WASI
+`_initialize` or freestanding `_start` entrypoint applies.
 
-Today only `host_log` and `push_logs` are wired end-to-end. The
-remaining imports and exports are reserved slots that the next round
-of work will fill in.
+The logs signal is wired end-to-end today: `consume_logs` is invoked
+synchronously per batch in processor/exporter mode, while receiver-mode
+plugins still drive their own loop via `push_logs`. Metrics and traces
+exports are looked up but not yet routed to consumers.
 
 ## Quickstart
 
@@ -64,7 +75,7 @@ Requires Zig **0.16.0** or newer.
 
 ```shell
 cd zig
-zig build     # outputs *.wasm files in zig-out/bin/
+zig build --release    # outputs *.wasm files in zig-out/bin/
 ```
 
 The first build also fetches `zig-protobuf` and the official
@@ -73,32 +84,52 @@ generates the OTLP types into `zig/src/opentelemetry/`.
 
 ### Use it from a collector
 
-`wasm4otel` is a Go package — to actually run it, register the factory
-in an OpenTelemetry Collector distribution (e.g. via
+`wasm4otel` is a Go module — to actually run it, register the
+factory of whichever role you need in an OpenTelemetry Collector
+distribution (e.g. via
 [`ocb`](https://opentelemetry.io/docs/collector/custom-collector/)):
 
 ```go
-import wasm4otel "github.com/agagniere/wasm4otel/go"
+import (
+    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/receiver"
+    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/processor"
+    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/exporter"
+)
 
-// add wasm4otel.NewFactory() to your receivers list
+// add the factories your distribution needs
+wasm4otelreceiver.NewFactory()
+wasm4otelprocessor.NewFactory()
+wasm4otelexporter.NewFactory()
 ```
 
-Then point a receiver entry at the built `.wasm`:
+Each factory uses the type name `wasm4otel`; the YAML disambiguates
+them by which pipeline section the entry appears under:
 
 ```yaml
 receivers:
   wasm4otel:
     path: /path/to/log_generator.wasm
 
+processors:
+  wasm4otel:
+    path: /path/to/severity_filter.wasm
+
+exporters:
+  debug:
+
 service:
   pipelines:
     logs:
-      receivers: [wasm4otel]
-      exporters: [debug]
+      receivers:  [wasm4otel]
+      processors: [wasm4otel]
+      exporters:  [debug]
 ```
 
-On startup, the plugin's `start()` runs once, emits six log records
-through `push_logs`, and they flow out the configured exporter.
+On startup, the receiver plugin's `start()` runs on its own goroutine
+and pushes batches via `push_logs` until shutdown. Each batch flows
+into the processor plugin's `consume_logs`, which transforms the batch
+and pushes the result out via its own `push_logs`. The configured
+exporter then writes it to its sink.
 
 ## Writing a plugin
 
@@ -106,13 +137,23 @@ In any wasm-capable language:
 
 1. Import `env.host_log(level, ptr, size)` if you want to log via the
    collector.
-2. Import `env.push_logs(ptr, size) -> i32` and pass it an
-   OTLP-serialized `LogsData` protobuf. Returns 0 on success.
-3. Export `start()` and `stop()`.
-4. Compile to `wasm32-wasi` (reactor) or `wasm32-freestanding`.
+2. Decide which role(s) you want the plugin to fill — receiver,
+   processor, or exporter. The plugin's export table tells the host
+   what it can do; the YAML pipeline entry decides what it is.
+3. **For a receiver:** import `env.push_logs(ptr, size) -> i32` and
+   pass it an OTLP-serialized `LogsData` protobuf. Export `start()` to
+   drive your loop (and `stop()` if you need a graceful tear-down hook).
+4. **For a processor or exporter:** export `consume_logs(ptr, size) -> i32`
+   so the host can deliver each batch, plus the two allocator exports
+   `alloc(size) -> ptr` and `free(ptr, size)` so the host can write
+   into your linear memory. A processor that wants to forward its
+   transformed batch downstream also imports `push_logs` and calls it
+   inside `consume_logs`.
+5. Compile to `wasm32-wasi` (reactor) or `wasm32-freestanding`.
 
 The Zig examples in `zig/freestanding/` and `zig/wasip1/` are intended
-to be readable templates.
+to be readable templates. They currently cover the receiver path; a
+processor/exporter template is the next Zig-side change.
 
 ## Reference docs
 
@@ -136,9 +177,11 @@ For what each side of *this* project supports:
 
 ## Roadmap
 
-- Wire `push_metrics` / `push_traces` on the host side.
-- Implement the `consume_*` exports so plugins can act as processors
-  and exporters, not just receivers.
+- Extend processor/exporter wiring to `consume_metrics` /
+  `consume_traces` and add the matching `push_metrics` / `push_traces`
+  host imports.
+- Ship a Zig processor template that exports `consume_logs`, `alloc`,
+  `free`, and re-publishes filtered/enriched batches via `push_logs`.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
 - Switch wazero from interpreter mode to the optimizing compiler.
