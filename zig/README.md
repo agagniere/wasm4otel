@@ -16,8 +16,22 @@ UPDATE.md            Commands to bump dependencies.
 Makefile             Legacy single-file build flow. Not used by build.zig.
 
 src/                 Shared Zig modules consumed by plugins.
-  log.zig            "hostlog" module: host_log binding + std.log adapter.
-  host.zig           "host" module: non-OTLP host helpers (interruptible sleep).
+                     All code here runs INSIDE the guest plugin. The
+                     `host`/`guest` names refer to who owns the
+                     function being wrapped, not who runs the code:
+                     `host.zig` wraps functions the host implements
+                     and the guest calls; `guest.zig` provides
+                     functions the guest implements and the host calls.
+  host.zig           "host" module: wrappers the guest uses to call
+                     into the host — `host_log`, `interruptible_sleep_ms`.
+                     Log helpers are re-exported from `log.zig` so
+                     plugins only need one import.
+  log.zig            Implementation of the log helpers; not its own
+                     module anymore. Re-exported by `host.zig`.
+  guest.zig          "guest" module: functions the host calls into the
+                     guest — `wasm4otel_alloc`, `wasm4otel_free`.
+                     Plugins re-export them via `@export` to make the
+                     wire names visible.
   pipeline.zig       "otel_pipeline_data" module: OTLP protobuf re-exports.
 
 freestanding/        Plugins targeting wasm32-freestanding.
@@ -180,44 +194,78 @@ suffix.
 
 ## Shared modules
 
-Both arrays of sources get `hostlog`, `host`, and `otel_pipeline_data`
+Both arrays of sources get `host`, `guest`, and `otel_pipeline_data`
 imported by default — see [`freestanding/one_log.zig`](freestanding/one_log.zig)
 for an example of OTLP encoding on the freestanding target.
 
-### `hostlog` (`src/log.zig`)
-
-Wraps the `host_log` import from the host's `env` module and bridges
-it to Zig's `std.log`.
-
-```zig
-pub const std_options: std.Options = .{
-    .logFn = @import("hostlog").logFn,
-    .log_level = .debug,
-};
-```
-
-The internal `LogLevel` enum mirrors zap's levels (debug=-1, info=0,
-…). `fromStd` converts `std.log.Level` to that range — call
-`hostLog`/`hostLogFormat` directly if you want a level without a
-`std.log` equivalent (e.g. `fatal`).
+A reminder on the naming convention: `host.zig` and `guest.zig` both
+run inside the guest plugin. The name says who *owns* the function on
+the other side of the wrapper — `host.zig` wraps functions the host
+implements and the guest calls; `guest.zig` provides functions the
+guest implements and the host calls. Picking by call direction
+avoids the "host imports / guest imports" ambiguity that comes from
+the wasm spec wording (the same function pair is "imports" from one
+side and "exports" from the other).
 
 ### `host` (`src/host.zig`)
 
-Wrappers over host-provided primitives that aren't OTLP plumbing. Today:
-`interruptibleSleep(std.Io.Duration)`, which calls the host's
-`interruptible_sleep_ms` import and turns a non-zero return into
+Wrappers the guest uses to call into the host. Today two things:
+
+**Cooperative sleep.** `interruptibleSleep(std.Io.Duration)` calls the
+host's `interruptible_sleep_ms` and turns a non-zero return into
 `error.Interrupted`. The host returns non-zero when the component's
 context fires (e.g. on `Shutdown`), giving plugins a graceful,
-sub-millisecond unwind path that doesn't depend on `WithSysNanosleep`
-or any WASI plumbing. Works in both `freestanding` and `wasip1`
-targets — it's just a function in the host's `env` module.
+sub-millisecond unwind path that doesn't depend on
+`WithSysNanosleep` or any WASI plumbing. Works in both `freestanding`
+and `wasip1` targets — it's just a function in the host's `env`
+module.
 
 ```zig
 try host.interruptibleSleep(.fromSeconds(2));
 try host.interruptibleSleep(.fromMilliseconds(250));
 ```
 
-`hostlog` may eventually fold in here.
+**Logging bridge.** Re-exported from `src/log.zig`. Wraps the
+`host_log` function and adapts it to Zig's `std.log`:
+
+```zig
+pub const std_options: std.Options = .{
+    .logFn = @import("host").logFn,
+    .log_level = .debug,
+};
+```
+
+The internal `LogLevel` enum mirrors zap's levels (debug=-1, info=0,
+…). `fromStd` converts `std.log.Level` to that range — call
+`host.hostLog`/`host.hostLogFormat` directly if you want a level
+without a `std.log` equivalent (e.g. `fatal`).
+
+### `guest` (`src/guest.zig`)
+
+Functions the guest implements for the host to call into. Today the
+allocator pair the processor/exporter ABI needs:
+
+- `alloc(size: u32) -> u32` — reserve a buffer in the guest's linear
+  memory, return its offset, or `0` on failure. Backed by
+  `std.heap.wasm_allocator`.
+- `free(ptr: u32, size: u32)` — release a buffer previously returned
+  by `alloc`.
+
+Plugins re-export these under the wire names the host looks up:
+
+```zig
+const guest = @import("guest");
+
+comptime {
+    @export(&guest.alloc, .{ .name = "wasm4otel_alloc" });
+    @export(&guest.free,  .{ .name = "wasm4otel_free" });
+}
+```
+
+The wire-name prefix is what lets Rust plugins (which link wasi-libc
+and inherit a `free` symbol) avoid a duplicate-symbol error at link
+time. Zig doesn't link libc and could survive either name; we use
+the prefixed names everywhere for symmetry.
 
 ### `otel_pipeline_data` (`src/pipeline.zig`)
 

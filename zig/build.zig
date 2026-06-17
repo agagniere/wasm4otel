@@ -57,7 +57,6 @@ pub fn build(b: *std.Build) !void {
     gen_proto.dependOn(&run_protoc.step);
 
     // Common modules
-    const hostLog = b.addModule("hostlog", .{ .root_source_file = b.path("src/log.zig") });
     const host = b.addModule("host", .{ .root_source_file = b.path("src/host.zig") });
     const guest = b.addModule("guest", .{ .root_source_file = b.path("src/guest.zig") });
     const otelData = b.addModule("otel_pipeline_data", .{
@@ -79,7 +78,6 @@ pub fn build(b: *std.Build) !void {
                 .target = set.target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "hostlog", .module = hostLog },
                     .{ .name = "host", .module = host },
                     .{ .name = "guest", .module = guest },
                     .{ .name = "otel_pipeline_data", .module = otelData },

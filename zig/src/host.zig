@@ -1,11 +1,19 @@
 //! Wrappers over host-provided primitives that aren't OTLP plumbing.
+//!
+//! To clarify any possible confusion: This file contains functions
+//! to be used by guest plugins, in order to call functions made available by the host
 
 const std = @import("std");
+const log = @import("log.zig");
 
 /// Host import. Sleeps for at most `ms` milliseconds. Returns 0 when
 /// the duration elapsed, non-zero when the host interrupted the sleep
 /// (e.g. component shutdown).
 extern fn interruptible_sleep_ms(ms: u32) u32;
+
+pub const hostLog = log.hostLog;
+pub const hostLogFormat = log.hostLogFormat;
+pub const logFn = log.logFn;
 
 pub const SleepError = error{Interrupted};
 

@@ -3,14 +3,13 @@ const builtin = @import("builtin");
 const build_info = @import("build_info");
 const otelData = @import("otel_pipeline_data");
 const host = @import("host");
-const host_log = @import("hostlog");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const LogsBatch = otelData.Logs.LogsData;
 
 pub const std_options: std.Options = .{
-    .logFn = host_log.logFn,
+    .logFn = host.logFn,
     .log_level = .debug,
 };
 

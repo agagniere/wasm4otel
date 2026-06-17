@@ -46,8 +46,7 @@ with `wasm-tools print` shows only two imports —
 - **Most of `std`** that is pure logic: `std.fmt`, `std.mem`,
   `std.ArrayList`, `std.json`, `std.hash`, `std.sort`, the
   protobuf-shaped types from `otel_pipeline_data`, etc.
-- **`std.log`** — provided you wire a `logFn` that doesn't try to
-  reach stderr. The `hostlog` module does exactly this.
+- **`std.log`** using `host.logFn`
 
 ## What doesn't work
 
@@ -112,5 +111,5 @@ const freestanding_sources: []const OtelPlugin = &.{
 };
 ```
 
-Both `hostlog` and `otel_pipeline_data` are wired into the
-freestanding loop by default — see `build.zig`.
+The `host`, `guest`, and `otel_pipeline_data` modules are wired into
+the freestanding loop by default — see `build.zig`.
