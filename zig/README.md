@@ -169,7 +169,7 @@ Pure Zig (and pure-Zig deps like `zig-protobuf`) emits no
 no-op and can be omitted.
 
 On the host side, wazero does not auto-detect command vs reactor —
-`LoadPlugin` in `go/wasm_otel_component.go` passes both names to
+`LoadPlugin` in `go/component.go` passes both names to
 `WithStartFunctions(...)`, so whichever entrypoint the plugin
 declares gets called.
 

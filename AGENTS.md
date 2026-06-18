@@ -17,7 +17,7 @@ The contract between Go and the guest is defined imperatively in `go/component.g
 
 Host imports exposed in the `env` module (called from the guest):
 - `host_log(level: i32, ptr, size)` — level matches `go.uber.org/zap/zapcore.Level` (debug=-1, info=0, …). The Zig side mirrors this in `zig/src/log.zig`'s `LogLevel` enum.
-- `push_logs(ptr, size) -> i32` — bytes are an OTLP-encoded `LogsData` protobuf. Returns 0 on success, non-zero error code otherwise (1 = bad memory read, 2 = decode failure, 3 = no downstream consumer). A processor plugin calls this from inside its `consume_logs` to forward the transformed batch; an exporter doesn't call it (or calls it knowing the host returns 3).
+- `push_logs(ptr, size) -> i32` — bytes are an OTLP-encoded `LogsData` protobuf. Returns 0 on success, non-zero error code otherwise (1 = bad memory read, 2 = decode failure, 3 = no downstream consumer, 4 = downstream consumer rejected the batch). A processor plugin calls this from inside its `consume_logs` to forward the transformed batch; an exporter doesn't call it (or calls it knowing the host returns 3).
 - `interruptible_sleep_ms(ms: u32) -> u32` — sleeps for up to `ms` milliseconds. Returns 0 when the duration elapsed, non-zero when the component's context fires (Shutdown). The Zig wrapper in `zig/src/host.zig` (`host` module) surfaces this as `interruptibleSleep(std.Io.Duration) error{Interrupted}!void`. Works in both freestanding and wasip1 — does not depend on any WASI plumbing.
 - `push_metrics` / `push_traces` are stubbed in the Go side and not yet wired.
 
