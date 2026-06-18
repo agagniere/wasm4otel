@@ -46,7 +46,7 @@ and [`experimental/features.go`](https://github.com/tetratelabs/wazero/blob/main
 | `simd` (simd128)          | `CoreFeatureSIMD`                            | T1       |
 
 `CoreFeaturesV2` is the default in `RuntimeConfig.WithCoreFeatures` and
-is what `wasm_otel_component.go` ends up with implicitly.
+is what `component.go` ends up with implicitly.
 
 ### Experimental (off by default)
 
@@ -129,7 +129,7 @@ Opt-in toggles on `wazero.NewModuleConfig()` (used in `LoadPlugin`):
 If a plugin needs real (non-deterministic) values from any of these
 WASI calls, ensure the matching `With…` is set on the
 `wazero.ModuleConfig` passed to `runtime.InstantiateWithConfig` (see
-`wasm_otel_component.go`). Common symptoms of a missing opt-in:
+`component.go`). Common symptoms of a missing opt-in:
 
 - `time_unix_nano` stuck at `1640995200000000000` (2022-01-01) →
   `WithSysWalltime()` is not wired.

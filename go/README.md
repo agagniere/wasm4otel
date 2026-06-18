@@ -222,6 +222,7 @@ calls `nextConsumerLogs.ConsumeLogs`. Return codes:
 | 1    | Could not read `(ptr, size)` from the guest's memory.     |
 | 2    | `plog.ProtoUnmarshaler` failed to decode the payload.     |
 | 3    | No logs consumer is wired (plugin pushing to a dead-end). |
+| 4    | Downstream `ConsumeLogs` returned an error.               |
 
 `push_metrics` and `push_traces` are commented out in
 `ExposeFunctionsToGuest`. Adding them is mostly mechanical (use

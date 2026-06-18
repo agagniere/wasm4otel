@@ -109,7 +109,7 @@ For wazero (this repo's host), features safe to use today:
 - Add `simd128` if you need it (wazero `CoreFeatureSIMD` is on by default).
 
 Features Zig *can* emit but wazero won't run without changes to
-`wasm_otel_component.go`: `tail_call`, `extended_const`, `atomics`,
+`go/component.go`: `tail_call`, `extended_const`, `atomics`,
 `exception_handling`. Features Zig can emit and wazero will never
 accept (until it gains support): `relaxed_simd`, `multimemory`, `fp16`,
 `wide_arithmetic`.

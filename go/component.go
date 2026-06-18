@@ -177,7 +177,10 @@ func (self *Component) outboundLogs(
 		self.guestLogger.Error("Plugin is pushing logs to a dead-end")
 		return 3
 	}
-	self.NextConsumerLogs.ConsumeLogs(self.context, logs)
+	if err := self.NextConsumerLogs.ConsumeLogs(self.context, logs); err != nil {
+		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
+		return 4
+	}
 	self.guestLogger.Infow("OK", "bytes", size)
 	return 0
 }
@@ -392,12 +395,6 @@ func (self *Component) callConsume(
 	fn wazero_api.Function,
 	payload []byte,
 ) (uint32, error) {
-	if fn == nil {
-		return 0, std_errors.New("wasm4otel: guest does not export the requested consume function")
-	}
-	if self.alloc == nil || self.free == nil {
-		return 0, std_errors.New("wasm4otel: guest does not export wasm4otel_alloc/wasm4otel_free")
-	}
 	size := uint64(len(payload))
 	if size == 0 {
 		return 0, nil
