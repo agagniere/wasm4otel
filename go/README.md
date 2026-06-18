@@ -25,11 +25,13 @@ go/
 ```
 
 The shared `wasm4otel` package holds the wazero plumbing, the host
-imports (`host_log`, `push_logs`, `interruptible_sleep_ms`), the
-guest-export lookups, the `Component` type and its `Start`/`Shutdown`/
-`ConsumeLogs`/`Capabilities` methods. The role packages are thin —
-each exports `NewFactory()` and a `createLogs` that picks a
-`ComponentMode` and validates the exports the role needs.
+imports (`host_log`, `push_logs`, `push_metrics`, `push_traces`,
+`interruptible_sleep_ms`), the guest-export lookups, the `Component`
+type and its `Start`/`Shutdown`/`ConsumeLogs`/`ConsumeMetrics`/
+`ConsumeTraces`/`Capabilities` methods. The role packages are thin —
+each exports `NewFactory()` and `createLogs` / `createMetrics` /
+`createTraces` hooks that pick a `ComponentMode` and validate the
+exports the matching signal needs.
 
 ## Public API
 
@@ -58,10 +60,12 @@ From the shared `wasm4otel` package:
   factory entrypoint: builds the component, registers host imports,
   loads the plugin, and verifies mode-mandatory exports
   (`wasm4otel_alloc` / `wasm4otel_free` for processor/exporter).
-  Each role's `createLogs` calls this.
+  Each role's per-signal `createX` calls this.
 - `Component` — the host-side type each factory builds and returns;
-  satisfies `receiver.Logs`, `processor.Logs`, and `exporter.Logs`
-  depending on the `ComponentMode` passed to `Load` / `NewComponent`.
+  satisfies `receiver.{Logs,Metrics,Traces}`,
+  `processor.{Logs,Metrics,Traces}`, and
+  `exporter.{Logs,Metrics,Traces}` depending on the `ComponentMode`
+  passed to `Load` / `NewComponent`.
 - `ComponentMode` — `ModeReceiver` / `ModeProcessor` / `ModeExporter`.
   Implements `fmt.Stringer` for use in error messages.
 
@@ -82,16 +86,18 @@ receivers:
 
 ## Lifecycle
 
-Every role's `createLogs` calls `wasm4otel.Load(cfg, logger, mode)`,
-which runs the three signal-independent setup steps:
+Every role's per-signal `createX` calls
+`wasm4otel.Load(cfg, logger, mode)`, which runs the three
+signal-independent setup steps:
 
 1. `NewComponent` — validates config, derives a cancellable context
    **from `context.Background()`** (deliberately *not* the framework's
-   create-phase ctx, which can be cancelled the moment `createLogs`
+   create-phase ctx, which can be cancelled the moment `createX`
    returns), creates a wazero runtime, instantiates
    `wasi_snapshot_preview1`.
 2. `ExposeFunctionsToGuest` — registers an `env` host module
-   exporting `host_log`, `push_logs`, and `interruptible_sleep_ms`.
+   exporting `host_log`, `push_logs`, `push_metrics`, `push_traces`,
+   and `interruptible_sleep_ms`.
 3. `LoadPlugin` — reads the `.wasm` file from disk, instantiates the
    module (which runs `_start` or `_initialize`), stores the instance
    for later memory access, and looks up exported functions: `start`,
@@ -107,24 +113,26 @@ incomplete). Receiver mode skips that check — receivers don't consume.
 The role package then:
 
 - Validates the signal-specific export. The processor and exporter
-  `createLogs` call `Component.ValidateLogsExport()`, which checks
-  `HasConsumeLogs()` and returns a "wasm4otel <role>: plugin does not
-  export consume_logs; it does not support the logs signal" error if
-  missing. A guest missing this is fine in general — it just doesn't
-  speak that signal, and should be wired into a different pipeline.
-  Receiver mode skips signal validation; it only needs `start`.
-- Stores the downstream consumer in `component.NextConsumerLogs`
-  (receiver and processor only — the exporter is terminal).
+  `createX` call `Component.Validate<Signal>Export()`, which checks
+  `HasConsume<Signal>()` and returns a "wasm4otel <role>: plugin does
+  not export consume_<signal>; it does not support the <signal>
+  signal" error if missing. A guest missing this is fine in general —
+  it just doesn't speak that signal, and should be wired into a
+  different pipeline. Receiver mode skips signal validation; it only
+  needs `start`.
+- Stores the downstream consumer in
+  `component.NextConsumer{Logs,Metrics,Traces}` (receiver and
+  processor only — the exporter is terminal).
 
 After that, the framework calls `Start`/`Shutdown` and (for processor
-and exporter) `ConsumeLogs`/`Capabilities`. Their behavior branches on
-`Mode`:
+and exporter) `Consume<Signal>`/`Capabilities`. Their behavior
+branches on `mode`:
 
-| Method        | `ModeReceiver`                                                                                                  | `ModeProcessor` / `ModeExporter`                                              |
-|---------------|-----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
-| `Start`       | Spawns a goroutine that calls `start()`; returns immediately. The goroutine owns the instance until shutdown.   | Calls `start()` synchronously under `callMu`. Must return promptly.           |
-| `Shutdown`    | Cancels the context (so any blocking host import unwinds), waits for the `start` goroutine, then calls `stop()`. | Cancels the context, calls `stop()`. No goroutine to wait for.                |
-| `ConsumeLogs` | Not called.                                                                                                     | Marshals the batch and runs the `wasm4otel_alloc → write → consume_logs → wasm4otel_free` dance. |
+| Method          | `ModeReceiver`                                                                                                  | `ModeProcessor` / `ModeExporter`                                                                  |
+|-----------------|-----------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| `Start`         | Spawns a goroutine that calls `start()`; returns immediately. The goroutine owns the instance until shutdown.   | Calls `start()` synchronously under `callMu`. Must return promptly.                               |
+| `Shutdown`      | Cancels the context (so any blocking host import unwinds), waits for the `start` goroutine, then calls `stop()`. | Cancels the context, calls `stop()`. No goroutine to wait for.                                    |
+| `Consume<Sig>`  | Not called.                                                                                                     | Marshals the batch and runs the `wasm4otel_alloc → write → consume_<sig> → wasm4otel_free` dance. |
 
 ## ABI strings used in this code
 
@@ -211,23 +219,19 @@ them through the collector's zap logger, tagged with
 [`zapcore.Level`](https://pkg.go.dev/go.uber.org/zap/zapcore#Level)
 value — `-1` for debug, `0` info, `1` warn, `2` error, etc.
 
-### `push_logs(ptr: i32, size: i32) -> i32`
+### `push_logs(ptr: i32, size: i32) -> i32`<br>`push_metrics(ptr: i32, size: i32) -> i32`<br>`push_traces(ptr: i32, size: i32) -> i32`
 
-Reads an OTLP-encoded `LogsData` protobuf from the guest's memory and
-calls `nextConsumerLogs.ConsumeLogs`. Return codes:
+Each reads an OTLP-encoded `LogsData` / `MetricsData` / `TracesData`
+protobuf from the guest's memory and calls the matching downstream
+`Consume<Signal>`. Return codes (uniform across the three):
 
-| Code | Meaning                                                   |
-| ---- | --------------------------------------------------------- |
-| 0    | Success.                                                  |
-| 1    | Could not read `(ptr, size)` from the guest's memory.     |
-| 2    | `plog.ProtoUnmarshaler` failed to decode the payload.     |
-| 3    | No logs consumer is wired (plugin pushing to a dead-end). |
-| 4    | Downstream `ConsumeLogs` returned an error.               |
-
-`push_metrics` and `push_traces` are commented out in
-`ExposeFunctionsToGuest`. Adding them is mostly mechanical (use
-`pmetric` / `ptrace` unmarshallers and the corresponding consumer
-interfaces) once metrics/traces signals are registered in the factory.
+| Code | Meaning                                                       |
+| ---- | ------------------------------------------------------------- |
+| 0    | Success.                                                      |
+| 1    | Could not read `(ptr, size)` from the guest's memory.         |
+| 2    | The matching `ProtoUnmarshaler` failed to decode the payload. |
+| 3    | No downstream consumer is wired (plugin pushing to dead-end). |
+| 4    | Downstream `Consume<Signal>` returned an error.               |
 
 ### `interruptible_sleep_ms(ms: i32) -> i32`
 
@@ -242,15 +246,15 @@ of the requested sleep duration.
 
 ## Guest exports (what the host looks up)
 
-| Export            | Called?                                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `start`           | Yes, on `Component.Start`. Required for receivers; optional for processor/exporter.                              |
-| `stop`            | Yes, on `Component.Shutdown`. Optional in every mode.                                                            |
-| `consume_logs`    | Yes for processor/exporter mode. Invoked once per incoming batch from `Component.ConsumeLogs`.                   |
-| `consume_metrics` | Looked up but the matching factory is not registered yet. Reserved.                                              |
-| `consume_traces`  | Looked up but the matching factory is not registered yet. Reserved.                                              |
-| `wasm4otel_alloc` | Yes for processor/exporter mode. Called before each `consume_*` to reserve a buffer in the guest's linear memory. |
-| `wasm4otel_free`  | Yes for processor/exporter mode. Called after each `consume_*` to release the buffer.                            |
+| Export             | Called?                                                                                                                                |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`            | Yes, on `Component.Start`. Required for receivers; optional for processor/exporter.                                                    |
+| `stop`             | Yes, on `Component.Shutdown`. Optional in every mode.                                                                                  |
+| `consume_logs`     | Yes for processor/exporter on the logs pipeline. Invoked once per incoming batch from `Component.ConsumeLogs`.                         |
+| `consume_metrics`  | Yes for processor/exporter on the metrics pipeline. Invoked once per incoming batch from `Component.ConsumeMetrics`.                   |
+| `consume_traces`   | Yes for processor/exporter on the traces pipeline. Invoked once per incoming batch from `Component.ConsumeTraces`.                     |
+| `wasm4otel_alloc`  | Yes for processor/exporter mode. Called before each `consume_*` to reserve a buffer in the guest's linear memory.                      |
+| `wasm4otel_free`   | Yes for processor/exporter mode. Called after each `consume_*` to release the buffer.                                                  |
 
 ### `wasm4otel_alloc(size: u32) -> u32`, `wasm4otel_free(ptr: u32, size: u32)`
 
@@ -269,21 +273,22 @@ own allocator (e.g. Zig's `std.heap.wasm_allocator`):
   header.
 
 The host's per-batch sequence is `wasm4otel_alloc → memory.Write →
-consume_logs → wasm4otel_free`, all under `Component.callMu`. If
-`consume_logs` traps, the host skips `wasm4otel_free` (the instance is
-poisoned and any further call may trap again or behave undefined-ly)
-and latches `Component.broken`.
+consume_<signal> → wasm4otel_free`, all under `Component.callMu`. If
+`consume_<signal>` traps, the host skips `wasm4otel_free` (the
+instance is poisoned and any further call may trap again or behave
+undefined-ly) and latches `Component.broken`.
 
-### `consume_logs(ptr: i32, size: i32) -> i32`
+### `consume_logs(ptr: i32, size: i32) -> i32`<br>`consume_metrics(ptr: i32, size: i32) -> i32`<br>`consume_traces(ptr: i32, size: i32) -> i32`
 
-Invoked once per incoming batch. `(ptr, size)` refers to a buffer the
-host just wrote into the guest's linear memory via `wasm4otel_alloc`.
-The guest must not retain the pointer past the call — the host calls
-`wasm4otel_free` as soon as `consume_logs` returns. Return code `0` for success, non-zero
-for plugin-side errors; the host surfaces non-zero rcs as a
+Invoked once per incoming batch on the matching signal pipeline.
+`(ptr, size)` refers to a buffer the host just wrote into the guest's
+linear memory via `wasm4otel_alloc`. The guest must not retain the
+pointer past the call — the host calls `wasm4otel_free` as soon as
+`consume_<signal>` returns. Return code `0` for success, non-zero for
+plugin-side errors; the host surfaces non-zero rcs as a
 `fmt.Errorf` and the framework treats it as a batch failure. A
 processor plugin typically decodes the payload, transforms the batch,
-re-encodes, and forwards via `push_logs` before returning `0`.
+re-encodes, and forwards via `push_<signal>` before returning `0`.
 
 ## Runtime configuration
 
@@ -303,8 +308,8 @@ Pinned in `go.mod`:
 
 - `github.com/tetratelabs/wazero` — wasm runtime.
 - `go.opentelemetry.io/collector/{component,consumer,pdata,receiver,processor,exporter}` —
-  collector framework. `pdata/plog.{ProtoMarshaler,ProtoUnmarshaler}` decode
-  and encode the bytes that cross the host/guest boundary.
+  collector framework. The three `pdata/p{log,metric,trace}.{ProtoMarshaler,ProtoUnmarshaler}`
+  encode and decode the bytes that cross the host/guest boundary.
 - `go.uber.org/zap` — collector logger.
 
 ## Building and testing

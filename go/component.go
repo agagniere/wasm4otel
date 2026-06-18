@@ -15,6 +15,8 @@ import (
 	otel_component "go.opentelemetry.io/collector/component"
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_logs "go.opentelemetry.io/collector/pdata/plog"
+	otel_metrics "go.opentelemetry.io/collector/pdata/pmetric"
+	otel_traces "go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/tetratelabs/wazero"
 	wazero_api "github.com/tetratelabs/wazero/api"
@@ -70,7 +72,9 @@ type Component struct {
 	alloc          wazero_api.Function
 	free           wazero_api.Function
 
-	NextConsumerLogs otel_consumer.Logs
+	NextConsumerLogs    otel_consumer.Logs
+	NextConsumerMetrics otel_consumer.Metrics
+	NextConsumerTraces  otel_consumer.Traces
 
 	startWg std_sync.WaitGroup
 
@@ -149,8 +153,8 @@ func (self *Component) ExposeFunctionsToGuest() error {
 	_, err := self.runtime.NewHostModuleBuilder("env").
 		NewFunctionBuilder().WithFunc(self.logToZap).Export("host_log").
 		NewFunctionBuilder().WithFunc(self.outboundLogs).Export("push_logs").
-		//NewFunctionBuilder().WithFunc(self.outboundMetrics).Export("push_metrics").
-		//NewFunctionBuilder().WithFunc(self.outboundTraces).Export("push_traces").
+		NewFunctionBuilder().WithFunc(self.outboundMetrics).Export("push_metrics").
+		NewFunctionBuilder().WithFunc(self.outboundTraces).Export("push_traces").
 		NewFunctionBuilder().WithFunc(self.interruptibleSleepMs).Export("interruptible_sleep_ms").
 		Instantiate(self.context)
 	return err
@@ -178,6 +182,64 @@ func (self *Component) outboundLogs(
 		return 3
 	}
 	if err := self.NextConsumerLogs.ConsumeLogs(self.context, logs); err != nil {
+		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
+		return 4
+	}
+	self.guestLogger.Infow("OK", "bytes", size)
+	return 0
+}
+
+func (self *Component) outboundMetrics(
+	_ std_context.Context,
+	module wazero_api.Module,
+	offset uint32,
+	size uint32,
+) uint32 {
+	buffer, ok := module.Memory().Read(offset, size)
+	if !ok {
+		self.guestLogger.Errorf("Unable to read (%d, %d) from memory", offset, size)
+		return 1
+	}
+	deserializer := otel_metrics.ProtoUnmarshaler{}
+	metrics, err := deserializer.UnmarshalMetrics(buffer)
+	if err != nil {
+		self.guestLogger.Errorw("Unable to deserialize metrics", "size", size, "error", err)
+		return 2
+	}
+	if self.NextConsumerMetrics == nil {
+		self.guestLogger.Error("Plugin is pushing metrics to a dead-end")
+		return 3
+	}
+	if err := self.NextConsumerMetrics.ConsumeMetrics(self.context, metrics); err != nil {
+		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
+		return 4
+	}
+	self.guestLogger.Infow("OK", "bytes", size)
+	return 0
+}
+
+func (self *Component) outboundTraces(
+	_ std_context.Context,
+	module wazero_api.Module,
+	offset uint32,
+	size uint32,
+) uint32 {
+	buffer, ok := module.Memory().Read(offset, size)
+	if !ok {
+		self.guestLogger.Errorf("Unable to read (%d, %d) from memory", offset, size)
+		return 1
+	}
+	deserializer := otel_traces.ProtoUnmarshaler{}
+	traces, err := deserializer.UnmarshalTraces(buffer)
+	if err != nil {
+		self.guestLogger.Errorw("Unable to deserialize traces", "size", size, "error", err)
+		return 2
+	}
+	if self.NextConsumerTraces == nil {
+		self.guestLogger.Error("Plugin is pushing traces to a dead-end")
+		return 3
+	}
+	if err := self.NextConsumerTraces.ConsumeTraces(self.context, traces); err != nil {
 		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
 		return 4
 	}
@@ -351,9 +413,27 @@ func (self *Component) HasConsumeMetrics() bool {
 	return self.consumeMetrics != nil
 }
 
+// ValidateMetricsExport reports whether the guest can serve the
+// metrics signal in this component's mode.
+func (self *Component) ValidateMetricsExport() error {
+	if !self.HasConsumeMetrics() {
+		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_metrics; it does not support the metrics signal", self.mode)
+	}
+	return nil
+}
+
 // HasConsumeTraces reports whether the guest exports consume_traces.
 func (self *Component) HasConsumeTraces() bool {
 	return self.consumeTraces != nil
+}
+
+// ValidateTracesExport reports whether the guest can serve the traces
+// signal in this component's mode.
+func (self *Component) ValidateTracesExport() error {
+	if !self.HasConsumeTraces() {
+		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_traces; it does not support the traces signal", self.mode)
+	}
+	return nil
 }
 
 // Capabilities satisfies consumer.Logs/Metrics/Traces. We always
@@ -368,19 +448,43 @@ func (self *Component) Capabilities() otel_consumer.Capabilities {
 // callMu. The guest forwards its transformed batch via the push_logs
 // host import — that path uses NextConsumerLogs, not the return path.
 func (self *Component) ConsumeLogs(ctx std_context.Context, logs otel_logs.Logs) error {
-	serializer := otel_logs.ProtoMarshaler{}
-	payload, err := serializer.MarshalLogs(logs)
+	payload, err := (&otel_logs.ProtoMarshaler{}).MarshalLogs(logs)
 	if err != nil {
 		return std_fmt.Errorf("marshal logs: %w", err)
 	}
-	rc, err := self.callConsume(ctx, self.consumeLogs, payload)
+	return self.deliver(ctx, self.consumeLogs, payload, "consume_logs")
+}
+
+// ConsumeMetrics: same shape as ConsumeLogs for the metrics signal.
+func (self *Component) ConsumeMetrics(ctx std_context.Context, metrics otel_metrics.Metrics) error {
+	payload, err := (&otel_metrics.ProtoMarshaler{}).MarshalMetrics(metrics)
 	if err != nil {
-		self.guestLogger.Errorw("consume_logs failed", "error", err, "bytes", len(payload))
+		return std_fmt.Errorf("marshal metrics: %w", err)
+	}
+	return self.deliver(ctx, self.consumeMetrics, payload, "consume_metrics")
+}
+
+// ConsumeTraces: same shape as ConsumeLogs for the traces signal.
+func (self *Component) ConsumeTraces(ctx std_context.Context, traces otel_traces.Traces) error {
+	payload, err := (&otel_traces.ProtoMarshaler{}).MarshalTraces(traces)
+	if err != nil {
+		return std_fmt.Errorf("marshal traces: %w", err)
+	}
+	return self.deliver(ctx, self.consumeTraces, payload, "consume_traces")
+}
+
+// deliver runs the per-batch alloc → write → consume → free dance and
+// turns the guest's return code into a Go error. Shared by every
+// ConsumeX so the marshal step is the only signal-specific code.
+func (self *Component) deliver(ctx std_context.Context, fn wazero_api.Function, payload []byte, signal string) error {
+	rc, err := self.callConsume(ctx, fn, payload)
+	if err != nil {
+		self.guestLogger.Errorw(signal+" failed", "error", err, "bytes", len(payload))
 		return err
 	}
 	if rc != 0 {
-		self.guestLogger.Warnw("consume_logs returned non-zero", "rc", rc, "bytes", len(payload))
-		return std_fmt.Errorf("guest consume_logs returned %d", rc)
+		self.guestLogger.Warnw(signal+" returned non-zero", "rc", rc, "bytes", len(payload))
+		return std_fmt.Errorf("guest %s returned %d", signal, rc)
 	}
 	return nil
 }

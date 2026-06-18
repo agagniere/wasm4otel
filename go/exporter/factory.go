@@ -18,6 +18,8 @@ func NewFactory() otel_exporter.Factory {
 		otel_component.MustNewType("wasm4otel"),
 		wasm4otel.DefaultConfig,
 		otel_exporter.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
+		otel_exporter.WithMetrics(createMetrics, otel_component.StabilityLevelDevelopment),
+		otel_exporter.WithTraces(createTraces, otel_component.StabilityLevelDevelopment),
 	)
 }
 
@@ -31,6 +33,36 @@ func createLogs(
 		return nil, err
 	}
 	if err := component.ValidateLogsExport(); err != nil {
+		return nil, err
+	}
+	return component, nil
+}
+
+func createMetrics(
+	_ std_context.Context,
+	settings otel_exporter.Settings,
+	anyconfig otel_component.Config,
+) (otel_exporter.Metrics, error) {
+	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeExporter)
+	if err != nil {
+		return nil, err
+	}
+	if err := component.ValidateMetricsExport(); err != nil {
+		return nil, err
+	}
+	return component, nil
+}
+
+func createTraces(
+	_ std_context.Context,
+	settings otel_exporter.Settings,
+	anyconfig otel_component.Config,
+) (otel_exporter.Traces, error) {
+	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeExporter)
+	if err != nil {
+		return nil, err
+	}
+	if err := component.ValidateTracesExport(); err != nil {
 		return nil, err
 	}
 	return component, nil

@@ -8,11 +8,12 @@ OpenTelemetry Collector components as **WebAssembly plugins**.
 - **Security**: Wasm plugins can only access what the host allowed them to access
 
 > :warning: **Status: proof of concept.** The host/guest ABI is hand-rolled.
-> The **logs** signal is wired end-to-end for all three roles (receiver,
-> processor, exporter); metrics and traces remain sketched but not
-> wired. The Zig template tree covers both a receiver
-> (`wasip1/log_generator.zig`) and a processor
-> (`freestanding/severity_filter.zig`). APIs will change.
+> All three signals (logs, metrics, traces) are wired end-to-end for
+> all three roles (receiver, processor, exporter). The Zig template
+> tree covers a logs receiver (`wasip1/log_generator.zig`) and a logs
+> processor (`freestanding/severity_filter.zig`); metrics and traces
+> are exercised on the host side but no Zig template exists yet.
+> APIs will change.
 
 ## How it fits together
 
@@ -22,8 +23,9 @@ depending on which factory is registered in the collector — receiver
 (plugin pushes telemetry from its own loop), processor (plugin
 transforms each batch handed to it), exporter (plugin terminally
 consumes each batch). The diagram below shows the receiver path; the
-processor and exporter paths flow `consume_logs` into the guest and
-optionally back out via `push_logs`.
+processor and exporter paths flow `consume_<signal>` into the guest
+and optionally back out via `push_<signal>` (one pair per signal:
+logs, metrics, traces).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -51,21 +53,25 @@ call to **push** telemetry into the next consumer:
 |--------------------------|---------------------------------------------------------------------------|
 | `host_log`               | Send a log line to the collector's own logger (zap levels).               |
 | `push_logs`              | Hand an OTLP-encoded `LogsData` protobuf to the next consumer.            |
+| `push_metrics`           | Hand an OTLP-encoded `MetricsData` protobuf to the next consumer.         |
+| `push_traces`            | Hand an OTLP-encoded `TracesData` protobuf to the next consumer.          |
 | `interruptible_sleep_ms` | Sleep at most N ms; returns non-zero when the component is shutting down. |
 
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume — `consume_logs`,
 `consume_metrics`, `consume_traces`. A processor or exporter plugin
-implements these, plus two small allocator exports `wasm4otel_alloc(size) -> ptr`
-and `wasm4otel_free(ptr, size)` so the host can hand a batch into the guest's
-linear memory. Lifecycle exports `start()` / `stop()` (called on
-collector startup and shutdown) are optional, and the usual WASI
-`_initialize` or freestanding `_start` entrypoint applies.
+implements the ones it needs, plus two small allocator exports
+`wasm4otel_alloc(size) -> ptr` and `wasm4otel_free(ptr, size)` so the
+host can hand a batch into the guest's linear memory. Lifecycle
+exports `start()` / `stop()` (called on collector startup and
+shutdown) are optional, and the usual WASI `_initialize` or
+freestanding `_start` entrypoint applies.
 
-The logs signal is wired end-to-end today: `consume_logs` is invoked
-synchronously per batch in processor/exporter mode, while receiver-mode
-plugins still drive their own loop via `push_logs`. Metrics and traces
-exports are looked up but not yet routed to consumers.
+All three signals (logs, metrics, traces) are wired end-to-end for
+all three roles. Each role's factory registers the three signals at
+collector startup; a plugin that doesn't export the matching
+`consume_<signal>` for the pipeline section it lives under is
+rejected at create-time with a clear error.
 
 ## Quickstart
 
@@ -178,9 +184,6 @@ For what each side of *this* project supports:
 
 ## Roadmap
 
-- Extend processor/exporter wiring to `consume_metrics` /
-  `consume_traces` and add the matching `push_metrics` / `push_traces`
-  host imports.
 - Pass `plugin_config` from collector YAML through to the guest.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
