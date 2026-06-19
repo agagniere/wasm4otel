@@ -54,6 +54,17 @@ func (self ComponentMode) String() string {
 	}
 }
 
+// Return codes from the guest's `start` export. 0 = ok; 1 = generic
+// failure; 2 = invalid user-provided config. The host distinguishes
+// known codes in the surfaced error message, falling back to generic
+// failure for forward-added codes. Guests are expected to host_log
+// their own details before returning non-zero.
+const (
+	StartSuccess       uint32 = 0
+	StartFailure       uint32 = 1
+	StartInvalidConfig uint32 = 2
+)
+
 type Component struct {
 	mode ComponentMode
 
@@ -304,19 +315,55 @@ func (self *Component) Start(_ std_context.Context, _ otel_component.Host) error
 		self.startWg.Add(1)
 		go func() {
 			defer self.startWg.Done()
-			if _, err := self.start.Call(self.context); err != nil {
-				self.guestLogger.Warnw("start returned with error", "error", err)
+			results, err := self.start.Call(self.context)
+			if err != nil {
+				// start runs outside invoke() (callMu would be useless
+				// for a lifetime-long loop), so latch broken here so the
+				// stop() invoke() in Shutdown sees the poisoned instance.
+				self.callMu.Lock()
+				self.broken = true
+				self.callMu.Unlock()
+				self.guestLogger.Warnw("start trapped", "error", err)
+				self.cancel()
+				return
+			}
+			if err := self.startResultError(results); err != nil {
+				self.guestLogger.Errorw("start reported failure", "error", err)
+				self.cancel()
 			}
 		}()
 	case ModeProcessor, ModeExporter:
 		// Synchronous init; must return promptly so the pipeline can
 		// start delivering batches via ConsumeLogs.
-		if _, err := self.invoke(self.context, self.start); err != nil {
-			self.guestLogger.Warnw("start returned with error", "error", err)
+		results, err := self.invoke(self.context, self.start)
+		if err != nil {
+			self.guestLogger.Warnw("start trapped", "error", err)
+			return err
+		}
+		if err := self.startResultError(results); err != nil {
+			self.guestLogger.Errorw("start reported failure", "error", err)
 			return err
 		}
 	}
 	return nil
+}
+
+// startResultError maps the guest's start return code (if any) to an
+// error. Empty results — i.e. a guest that still declares start as
+// `() -> ()` — are treated as success for backward compatibility; the
+// new convention is `() -> i32` so the plugin can signal init failure.
+func (self *Component) startResultError(results []uint64) error {
+	if len(results) == 0 {
+		return nil
+	}
+	switch uint32(results[0]) {
+	case StartSuccess:
+		return nil
+	case StartInvalidConfig:
+		return std_fmt.Errorf("wasm4otel %s: plugin reports invalid config (see plugin logs)", self.mode)
+	default:
+		return std_fmt.Errorf("wasm4otel %s: plugin start failed with code %d (see plugin logs)", self.mode, uint32(results[0]))
+	}
 }
 
 func (self *Component) Shutdown(context std_context.Context) error {

@@ -8,6 +8,18 @@
 
 const std = @import("std");
 
+/// Return type for the `start` guest export. `0 = success`,
+/// `1 = generic failure`, `2 = invalid user-provided config`; the
+/// non-exhaustive tail lets the host evolve more specific codes later
+/// without breaking the ABI. The plugin should `host_log` its own
+/// detail before returning anything non-zero.
+pub const StartResult = enum(i32) {
+    success = 0,
+    failure = 1,
+    invalid_config = 2,
+    _,
+};
+
 /// Reserve `size` bytes in linear memory and return the offset.
 /// Returns 0 if the underlying allocator can't satisfy the request —
 /// the host treats 0 as a non-trapping failure and does not call

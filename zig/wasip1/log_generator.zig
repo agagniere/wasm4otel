@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_info = @import("build_info");
 const otelData = @import("otel_pipeline_data");
 const host = @import("host");
+const guest = @import("guest");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -37,7 +38,7 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
 }
 
 /// Begin logs reception
-export fn start() void {
+export fn start() guest.StartResult {
     var arena: std.heap.ArenaAllocator = .init(std.heap.wasm_allocator);
     defer arena.deinit();
     const alloc: Allocator = arena.allocator();
@@ -66,6 +67,7 @@ export fn start() void {
             break;
         };
     }
+    return .success;
 }
 
 /// End logs reception

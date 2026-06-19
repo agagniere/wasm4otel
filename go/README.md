@@ -268,7 +268,7 @@ the guest's allocator entirely — receivers don't have to export
 
 | Export             | Called?                                                                                                                                |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `start`            | Yes, on `Component.Start`. Required for receivers; optional for processor/exporter.                                                    |
+| `start`            | Yes, on `Component.Start`. Required for receivers; optional for processor/exporter. Signature `() -> i32` — see rc table below.        |
 | `stop`             | Yes, on `Component.Shutdown`. Optional in every mode.                                                                                  |
 | `consume_logs`     | Yes for processor/exporter on the logs pipeline. Invoked once per incoming batch from `Component.ConsumeLogs`.                         |
 | `consume_metrics`  | Yes for processor/exporter on the metrics pipeline. Invoked once per incoming batch from `Component.ConsumeMetrics`.                   |
@@ -297,6 +297,28 @@ consume_<signal> → wasm4otel_free`, all under `Component.callMu`. If
 `consume_<signal>` traps, the host skips `wasm4otel_free` (the
 instance is poisoned and any further call may trap again or behave
 undefined-ly) and latches `Component.broken`.
+
+### `start() -> i32`
+
+Invoked from `Component.Start`. The return code tells the host whether
+the plugin came up cleanly:
+
+| Code | Meaning                                                                                                                                          |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Success.                                                                                                                                         |
+| 1    | Generic failure (couldn't open a port, downstream connect failed, etc.). Host surfaces it as `wasm4otel <role>: plugin start failed`.            |
+| 2    | Invalid user-provided config — the plugin parsed `get_config` and rejected it. Host surfaces it as `wasm4otel <role>: plugin reports invalid config`. |
+| _    | Forward-compatible — any unknown code is treated as generic failure with the numeric code included in the surfaced error message.                |
+
+Guests should `host_log` their own detail (which key was bad, which
+port wouldn't bind) before returning non-zero — the host's wording is
+deliberately generic. For processor/exporter modes the rc flows back
+through `Component.Start` as an `error` and the collector fails to
+come up. For receiver mode the start goroutine logs at `Error` level
+and calls the component's `cancel()` so anything blocked on its
+context unwinds.
+
+`start()` can also return `()` if it cannot fail
 
 ### `consume_logs(ptr: i32, size: i32) -> i32`<br>`consume_metrics(ptr: i32, size: i32) -> i32`<br>`consume_traces(ptr: i32, size: i32) -> i32`
 
