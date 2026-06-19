@@ -5,6 +5,7 @@ import (
 	std_errors "errors"
 	std_fmt "fmt"
 	std_io "io"
+	std_json "encoding/json"
 	std_os "os"
 	std_sync "sync"
 	std_time "time"
@@ -63,6 +64,11 @@ type Component struct {
 	config      Config
 	runtime     wazero.Runtime
 	instance    wazero_api.Module
+
+	// pluginConfigJSON is the YAML's plugin_config map marshalled to
+	// JSON once at NewComponent time; the guest pulls it via the
+	// get_config_size / get_config host imports.
+	pluginConfigJSON []byte
 
 	start          wazero_api.Function
 	stop           wazero_api.Function
@@ -125,18 +131,27 @@ func NewComponent(
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	var pluginConfigJSON []byte
+	if config.PluginConfig != nil {
+		var err error
+		pluginConfigJSON, err = std_json.Marshal(config.PluginConfig)
+		if err != nil {
+			return nil, std_fmt.Errorf("wasm4otel %s: marshal plugin_config: %w", mode, err)
+		}
+	}
 	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path)
 	// Detach from the framework's create-phase ctx — the component
 	// owns its own cancellation, ended only by Shutdown via `cancel`.
 	context, cancel := std_context.WithCancel(std_context.Background())
 	runtime := newRuntime(context)
 	return &Component{
-		mode:    mode,
-		logger:  hostLogger,
-		context: context,
-		cancel:  cancel,
-		config:  config,
-		runtime: runtime,
+		mode:             mode,
+		logger:           hostLogger,
+		context:          context,
+		cancel:           cancel,
+		config:           config,
+		runtime:          runtime,
+		pluginConfigJSON: pluginConfigJSON,
 	}, nil
 }
 
@@ -156,8 +171,37 @@ func (self *Component) ExposeFunctionsToGuest() error {
 		NewFunctionBuilder().WithFunc(self.outboundMetrics).Export("push_metrics").
 		NewFunctionBuilder().WithFunc(self.outboundTraces).Export("push_traces").
 		NewFunctionBuilder().WithFunc(self.interruptibleSleepMs).Export("interruptible_sleep_ms").
+		NewFunctionBuilder().WithFunc(self.getConfig).Export("get_config").
 		Instantiate(self.context)
 	return err
+}
+
+// getConfig hands the JSON-encoded plugin_config to the guest in one
+// call. Returns the true size in bytes regardless of whether anything
+// was written:
+//
+//   - returns 0 if there is no plugin_config to fetch;
+//   - if `size >= true_size`, writes the bytes at `ptr` and returns
+//     true_size (= bytes written);
+//   - if `size < true_size`, writes nothing and returns true_size so
+//     the guest knows to re-allocate and call again.
+//
+// Probing with `(0, 0)` is supported: it returns the size without
+// touching guest memory. JSON can't be parsed partially, so we refuse
+// to write a truncated payload instead of trying to be helpful.
+func (self *Component) getConfig(_ std_context.Context, module wazero_api.Module, ptr uint32, size uint32) uint32 {
+	total := uint32(len(self.pluginConfigJSON))
+	if total == 0 {
+		return 0
+	}
+	if size < total {
+		return total
+	}
+	if !module.Memory().Write(ptr, self.pluginConfigJSON) {
+		self.guestLogger.Errorw("get_config: memory write failed", "ptr", ptr, "size", total)
+		return 0
+	}
+	return total
 }
 
 func (self *Component) outboundLogs(

@@ -56,6 +56,7 @@ call to **push** telemetry into the next consumer:
 | `push_metrics`           | Hand an OTLP-encoded `MetricsData` protobuf to the next consumer.         |
 | `push_traces`            | Hand an OTLP-encoded `TracesData` protobuf to the next consumer.          |
 | `interruptible_sleep_ms` | Sleep at most N ms; returns non-zero when the component is shutting down. |
+| `get_config`             | Fetch the YAML `plugin_config` as a JSON document.                        |
 
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume — `consume_logs`,
@@ -184,7 +185,6 @@ For what each side of *this* project supports:
 
 ## Roadmap
 
-- Pass `plugin_config` from collector YAML through to the guest.
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings.
 - Use [arcjet/gravity](https://github.com/arcjet/gravity) to load

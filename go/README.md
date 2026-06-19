@@ -26,9 +26,9 @@ go/
 
 The shared `wasm4otel` package holds the wazero plumbing, the host
 imports (`host_log`, `push_logs`, `push_metrics`, `push_traces`,
-`interruptible_sleep_ms`), the guest-export lookups, the `Component`
-type and its `Start`/`Shutdown`/`ConsumeLogs`/`ConsumeMetrics`/
-`ConsumeTraces`/`Capabilities` methods. The role packages are thin —
+`interruptible_sleep_ms`, `get_config`), the guest-export lookups, the
+`Component` type and its `Start`/`Shutdown`/`ConsumeLogs`/
+`ConsumeMetrics`/`ConsumeTraces`/`Capabilities` methods. The role packages are thin —
 each exports `NewFactory()` and `createLogs` / `createMetrics` /
 `createTraces` hooks that pick a `ComponentMode` and validate the
 exports the matching signal needs.
@@ -82,7 +82,7 @@ receivers:
 | Field           | Type                     | Notes                                                                |
 | --------------- | ------------------------ | -------------------------------------------------------------------- |
 | `path`          | string (required)        | Filesystem path to the `.wasm` module. `Validate` errors if empty.   |
-| `plugin_config` | `map[string]interface{}` | Reserved for passing arbitrary config to the guest. Not yet wired.   |
+| `plugin_config` | `map[string]interface{}` | Marshalled to JSON once at load-time; the guest reads it via the `get_config` host import. |
 
 ## Lifecycle
 
@@ -97,7 +97,7 @@ signal-independent setup steps:
    `wasi_snapshot_preview1`.
 2. `ExposeFunctionsToGuest` — registers an `env` host module
    exporting `host_log`, `push_logs`, `push_metrics`, `push_traces`,
-   and `interruptible_sleep_ms`.
+   `interruptible_sleep_ms`, and `get_config`.
 3. `LoadPlugin` — reads the `.wasm` file from disk, instantiates the
    module (which runs `_start` or `_initialize`), stores the instance
    for later memory access, and looks up exported functions: `start`,
@@ -243,6 +243,26 @@ guest-side wrapper that turns the non-zero return into
 `error.Interrupted`. The underlying `select` resolves immediately when
 the context fires, so shutdown latency is sub-millisecond regardless
 of the requested sleep duration.
+
+### `get_config(ptr: i32, size: i32) -> i32`
+
+Hands the YAML `plugin_config` map to the guest as a JSON document.
+The host marshals the map once at `NewComponent` time (via
+`encoding/json`) and serves the cached bytes on every call. Returns
+the document's true byte length regardless of whether anything was
+written:
+
+- `total == 0` — no `plugin_config` was set in YAML, nothing to do.
+- `size >= total` — writes `total` bytes at `ptr`, returns `total`.
+- `size < total` — writes nothing; returns `total` so the guest knows
+  to re-allocate and retry. JSON can't be parsed partially, so we
+  refuse to write a truncated payload.
+
+The guest can probe with `(0, 0)` to learn the size before allocating;
+or pass a stack-sized guess and only fall back to its heap allocator
+when the return value exceeds it. Either pattern keeps the host out of
+the guest's allocator entirely — receivers don't have to export
+`wasm4otel_alloc`/`wasm4otel_free` just to read config.
 
 ## Guest exports (what the host looks up)
 

@@ -6,10 +6,17 @@
 const std = @import("std");
 const log = @import("log.zig");
 
-/// Host import. Sleeps for at most `ms` milliseconds. Returns 0 when
-/// the duration elapsed, non-zero when the host interrupted the sleep
-/// (e.g. component shutdown).
+/// Sleeps for at most `ms` milliseconds. Returns 0 when the duration
+/// elapsed, non-zero when the host interrupted the sleep (e.g.
+/// component shutdown).
 extern fn interruptible_sleep_ms(ms: u32) u32;
+
+/// Writes the YAML `plugin_config` map at `ptr` as a JSON document,
+/// but only when `size` is at least the document's true byte length.
+/// Returns the true length in either case (0 if no config was set),
+/// so callers can probe with `(null, 0)` and re-call with a buffer
+/// the right size.
+extern fn get_config(ptr: ?[*]u8, size: u32) u32;
 
 pub const hostLog = log.hostLog;
 pub const hostLogFormat = log.hostLogFormat;
@@ -31,4 +38,17 @@ pub fn interruptibleSleep(duration: std.Io.Duration) SleepError!void {
         0 => {},
         else => error.Interrupted,
     };
+}
+
+/// Fetch the YAML `plugin_config` as a JSON document. Returns `null`
+/// when no `plugin_config` was set; otherwise allocates and returns
+/// the bytes — caller frees with `allocator.free`. Parse with
+/// `std.json.parseFromSlice`.
+pub fn getConfigAlloc(allocator: std.mem.Allocator) std.mem.Allocator.Error!?[]u8 {
+    const size = get_config(null, 0);
+    if (size == 0) return null;
+    const buf = try allocator.alloc(u8, size);
+    errdefer allocator.free(buf);
+    std.debug.assert(get_config(buf.ptr, @intCast(buf.len)) == size);
+    return buf;
 }
