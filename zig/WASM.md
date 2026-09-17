@@ -25,8 +25,9 @@ Authoritative sources in the Zig tree:
 | `wasi`        | `wasi_snapshot_preview1` calls.                              | Anything wanting files/clocks/random and broad runtime support. |
 | `emscripten`  | Emscripten libc + JS glue.                                  | Browser-targeted, with the Emscripten toolchain on top.         |
 
-There's a single `wasi` tag covering all WASI revisions. The revision
-is selected via `os_version_min` / `os_version_max` semver:
+There's a single `wasi` tag covering all WASI revisions, with the
+revision *nominally* expressed via `os_version_min` / `os_version_max`
+semver:
 
 | WASI revision | semver range |
 | ------------- | ------------ |
@@ -34,41 +35,66 @@ is selected via `os_version_min` / `os_version_max` semver:
 | Preview 2     | `0.2.x`      |
 | Preview 3     | `0.3.x`      |
 
-In practice, Zig's stdlib only fully implements Preview 1. Preview 2
-and 3 are reachable by importing component-model bindings manually —
-the language permits it but you write the glue.
+Treat that as documentation, not a switch. On Zig 0.16 nothing in the
+stdlib branches on the WASI version range, so setting it changes no
+emitted code — it only makes the target triple self-describing
+(`wasm32-wasi.0.1` in `--summary all` output). `build.zig` pins it for
+exactly that reason, and says so in a comment.
+
+Nor is there anything to switch *to*: Zig's stdlib implements Preview 1
+only. There is no `wasip2` / `preview2` / component-model support
+anywhere in `std` on 0.16. Preview 2 and 3 are reachable only by
+importing component-model bindings by hand — the language permits it,
+but you write all the glue.
 
 ## Feature flags
 
-Zig's `std.Target.wasm.Feature` enum lists 18 features. Each maps onto
-a WebAssembly proposal name:
+On Zig 0.16 — the version `build.zig.zon` pins as the minimum —
+`std.Target.wasm.Feature` lists 18 features. Each maps onto a
+WebAssembly proposal name:
 
-| Zig feature                     | WASM proposal                  | Spec version |
-| ------------------------------- | ------------------------------ | ------------ |
-| `mutable_globals`               | `mutable-globals`              | 1.0          |
-| `sign_ext`                      | `sign-extension-ops`           | 2.0          |
-| `nontrapping_fptoint`           | `nontrapping-fptoint`          | 2.0          |
-| `multivalue`                    | `multi-value`                  | 2.0          |
-| `bulk_memory`                   | `bulk-memory-operations`       | 2.0          |
-| `bulk_memory_opt`               | `bulk-memory-operations` (subset of opcodes) | 2.0          |
-| `nontrapping_bulk_memory_len0`  | `bulk-memory-operations` (zero-length variant) | 2.0          |
-| `reference_types`               | `reference-types`              | 2.0          |
-| `simd128`                       | `simd`                         | 2.0          |
-| `relaxed_simd`                  | `relaxed-simd`                 | post-2.0     |
-| `multimemory`                   | `multi-memory`                 | post-2.0     |
-| `tail_call`                     | `tail-call`                    | post-2.0     |
-| `extended_const`                | `extended-const`               | post-2.0     |
-| `atomics`                       | `threads`                      | post-2.0     |
-| `exception_handling`            | `exception-handling`           | post-2.0     |
-| `fp16`                          | `half-precision`               | post-2.0     |
-| `wide_arithmetic`               | `wide-arithmetic`              | post-2.0     |
-| `call_indirect_overlong`        | (LLVM encoding tweak — no spec proposal) | —      |
+| Zig feature                    | WASM proposal                                  | Spec version        |
+| ------------------------------ | ---------------------------------------------- | ------------------- |
+| `mutable_globals`              | `mutable-globals`                              | 1.0                 |
+| `sign_ext`                     | `sign-extension-ops`                           | 2.0                 |
+| `nontrapping_fptoint`          | `nontrapping-fptoint`                          | 2.0                 |
+| `multivalue`                   | `multi-value`                                  | 2.0                 |
+| `bulk_memory`                  | `bulk-memory-operations`                       | 2.0                 |
+| `bulk_memory_opt`              | `bulk-memory-operations` (subset of opcodes)   | 2.0                 |
+| `nontrapping_bulk_memory_len0` | `bulk-memory-operations` (zero-length variant) | 2.0                 |
+| `reference_types`              | `reference-types`                              | 2.0                 |
+| `simd128`                      | `simd`                                         | 2.0                 |
+| `relaxed_simd`                 | `relaxed-simd`                                 | 3.0                 |
+| `multimemory`                  | `multi-memory`                                 | 3.0                 |
+| `tail_call`                    | `tail-call`                                    | 3.0                 |
+| `extended_const`               | `extended-const`                               | 3.0                 |
+| `exception_handling`           | `exception-handling`                           | 3.0                 |
+| `atomics`                      | `threads`                                      | phase 4, unreleased |
+| `wide_arithmetic`              | `wide-arithmetic`                              | phase 4, unreleased |
+| `fp16`                         | `half-precision` (FP16)                        | phase 2             |
+| `call_indirect_overlong`       | (LLVM encoding tweak — no spec proposal)       | —                   |
 
 Notably **absent** from Zig — there's no way to emit code that uses
-these from Zig today: `gc`, `function-references`, `memory64` (use the
-`wasm64` ISA instead), `custom-page-sizes`, `stack-switching`,
-`branch-hinting`, `flexible-vectors`, `memory-control`,
+these from Zig today: `gc`, `function-references`, `branch-hinting`,
+`memory64` (use the `wasm64` ISA instead), `custom-page-sizes`,
+`stack-switching`, `flexible-vectors`, `memory-control`,
 `shared-everything-threads`, and the entire **component model**.
+
+Note that the first three of those are part of core spec 3.0, so Zig
+cannot emit all of the current core spec — and `fp16` runs the other
+way, a feature Zig emits that no major runtime implements (it's only
+phase 2, unimplemented in Wasmtime as well as wazero). See
+[`../WASM.md`](../WASM.md) for where each proposal actually stands.
+
+**On master (checked against 0.17.0-dev.2131+d08989840):** a 19th
+feature, `gc`, joins the enum and the `bleeding_edge` model. Treat it
+as a target flag rather than a new capability — it maps to LLVM's
+`+gc` and the compiler accepts `-mcpu=generic+gc`, but there is no
+wasm-GC type surface anywhere in std (no `structref`, `arrayref`,
+`struct.new`, …), so there's still nothing to write in Zig that would
+emit a GC instruction. `mvp`, `generic` and `lime1` are unchanged, so
+this repo's target is unaffected. Nothing else in the tables above
+moved: still Preview 1 only, and still no synthesized entry symbol.
 
 ## CPU models
 
@@ -110,9 +136,14 @@ For wazero (this repo's host), features safe to use today:
 
 Features Zig *can* emit but wazero won't run without changes to
 `go/component.go`: `tail_call`, `extended_const`, `atomics`,
-`exception_handling`. Features Zig can emit and wazero will never
-accept (until it gains support): `relaxed_simd`, `multimemory`, `fp16`,
-`wide_arithmetic`.
+`exception_handling`. These are four of wazero's five experimental
+opt-ins — the fifth, `function-references`, Zig has no way to emit, so
+the two toolchains meet on exactly four negotiable features.
+
+Features Zig can emit and wazero will never accept (until it gains
+support): `relaxed_simd`, `multimemory`, `fp16`, `wide_arithmetic`.
+`fp16` is the bleakest of those — no major runtime implements it,
+Wasmtime included.
 
 `bleeding_edge` is **not** safe against the current wazero
 configuration — it pulls in `relaxed_simd`, `multimemory`, and
@@ -124,11 +155,41 @@ Independent of features, WASI plugins pick an execution model on the
 exe:
 
 ```zig
-exe.wasi_exec_model = .reactor;   // expects _initialize, exports stay live
+exe.wasi_exec_model = .reactor;   // entry symbol is _initialize, exports stay live
 // or
-exe.wasi_exec_model = .command;   // expects _start, exits when done
+exe.wasi_exec_model = .command;   // entry symbol is _start, exits when done
 ```
+
+The field is `?std.builtin.WasiExecModel`, and `build.zig` leaves it
+`null` for the freestanding target — the flag is only passed to the
+compiler when set, and it means nothing outside `os_tag = .wasi`.
 
 `wasm4otel`'s wasip1 plugins are reactors, because the host calls
 `start()` / `stop()` on lifecycle events rather than running the
 module top-to-bottom once.
+
+**Setting `wasi_exec_model` does not create the entry symbol.** On Zig
+0.16 the toolchain synthesizes neither `_initialize` nor `_start`; the
+plugin has to export one itself:
+
+```zig
+comptime {
+    @export(&init, .{ .name = "_initialize" });
+}
+
+fn init() callconv(.{ .wasm_mvp = .{} }) void { ... }
+```
+
+Every plugin in this repo does this — `_initialize` in `wasip1/`,
+`_start` in `freestanding/` (see `wasip1/log_generator.zig:20-22`).
+The freestanding ones have no execution model at all; `_start` there is
+just an export name the host happens to call, not a WASI concept. The
+host asks for both names —
+`WithStartFunctions("_start", "_initialize")` in `go/component.go` —
+so either spelling works from its side, but one of them must exist.
+Omit both and nothing complains: wazero skips a start function that
+isn't exported rather than erroring, so the module instantiates
+successfully and is simply never initialized. That surfaces much later
+as an uninitialized allocator or a null global, far from the cause.
+Export only one name, too — wazero calls every start function it
+finds, so exporting both runs your init twice.
