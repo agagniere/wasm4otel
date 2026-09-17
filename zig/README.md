@@ -23,21 +23,26 @@ src/                 Shared Zig modules consumed by plugins.
                      and the guest calls; `guest.zig` provides
                      functions the guest implements and the host calls.
   host.zig           "host" module: wrappers the guest uses to call
-                     into the host — `host_log`, `interruptible_sleep_ms`.
+                     into the host — `host_log`,
+                     `interruptible_sleep_ms`, `get_config`.
                      Log helpers are re-exported from `log.zig` so
                      plugins only need one import.
   log.zig            Implementation of the log helpers; not its own
                      module anymore. Re-exported by `host.zig`.
   guest.zig          "guest" module: functions the host calls into the
-                     guest — `wasm4otel_alloc`, `wasm4otel_free`.
-                     Plugins re-export them via `@export` to make the
-                     wire names visible.
+                     guest — `wasm4otel_alloc`, `wasm4otel_free`,
+                     re-exported by plugins via `@export` to make the
+                     wire names visible — plus `StartResult`, the
+                     return type `start()` is declared against.
   pipeline.zig       "otel_pipeline_data" module: OTLP protobuf re-exports.
 
 freestanding/        Plugins targeting wasm32-freestanding.
   README.md          Constraints of the freestanding target.
   helloworld.zig     Minimal plugin — just logs through host_log.
   one_log.zig        Encodes and pushes one OTLP log record (no clock).
+  severity_filter.zig Processor: decodes a LogsData batch, drops
+                     records below a severity threshold, re-encodes
+                     and forwards via push_logs.
 
 wasip1/              Plugins targeting wasm32-wasi (reactor model).
   README.md          What WASI buys, determinism gotchas under wazero.
@@ -137,12 +142,26 @@ the module is long-lived and require `_initialize` instead. Picking
 the wrong one is a *link-time* error — the linker fails with "entry
 symbol not defined" if the corresponding export is missing.
 
-Zig 0.16 does **not** auto-emit either entrypoint. The plugin code
-must declare it. For pure-Zig reactor builds, the minimum is:
+Zig 0.16 does **not** auto-emit either entrypoint, and neither does
+master. The plugin code must declare it. All five plugins here use
+the `@export` builtin rather than the `export` keyword — the keyword
+is expected to go away in a future Zig release, and `@export` is what
+lets the Zig function keep a sane name (`init`) while the wire name
+is `_initialize`. For pure-Zig reactor builds, the minimum is:
 
 ```zig
-export fn _initialize() callconv(.{ .wasm_mvp = .{} }) void {}
+comptime {
+    @export(&init, .{ .name = "_initialize" });
+}
+
+fn init() callconv(.{ .wasm_mvp = .{} }) void {}
 ```
+
+Setting `wasi_exec_model` does not put the symbol in the export
+table either; `build.zig` passes no `-fno-entry`, so wasm-lld exports
+the entry symbol it was given. That is why `_initialize` / `_start`
+show up in `zig-out/bin/*.wasm` even though `OtelPlugin.symbols`
+never lists them.
 
 The WASI ABI
 ([`design/application-abi.md`](https://github.com/WebAssembly/WASI/blob/snapshot-01/design/application-abi.md))
@@ -181,13 +200,18 @@ arrays at the bottom of the file:
 ```zig
 const wasip1_sources: []const OtelPlugin = &.{
     .{ .filename = "log_generator.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "severity_parser.zig", .symbols = &.{"start"}, .tests = true },
     // .{ .filename = "my_plugin.zig",     .symbols = &.{ "start", "stop" } },
 };
 ```
 
 - `filename` — path within `freestanding/` or `wasip1/`.
 - `symbols` — wasm export names made visible to the host. The output
-  binary's `export_symbol_names` is set to this list.
+  binary's `export_symbol_names` is set to this list. The entry
+  symbol (`_start` / `_initialize`) does **not** belong here — see
+  *`_start` vs `_initialize`* above.
+- `tests` — optional; adds the `zig build test` compile for this
+  plugin.
 
 The output binary name is derived from `filename` minus the `.zig`
 suffix.
@@ -209,7 +233,7 @@ side and "exports" from the other).
 
 ### `host` (`src/host.zig`)
 
-Wrappers the guest uses to call into the host. Today two things:
+Wrappers the guest uses to call into the host. Today three things:
 
 **Cooperative sleep.** `interruptibleSleep(std.Io.Duration)` calls the
 host's `interruptible_sleep_ms` and turns a non-zero return into
@@ -240,10 +264,28 @@ The internal `LogLevel` enum mirrors zap's levels (debug=-1, info=0,
 `host.hostLog`/`host.hostLogFormat` directly if you want a level
 without a `std.log` equivalent (e.g. `fatal`).
 
+**Plugin config.** `getConfigAlloc(allocator)` fetches the YAML
+`plugin_config` map as a JSON document. It hides the two-call ABI
+(`get_config(null, 0)` to learn the size, then a sized read),
+returning `std.mem.Allocator.Error!?[]u8` — `null` when the operator
+set no `plugin_config`, otherwise allocated bytes the caller frees:
+
+```zig
+const raw = try host.getConfigAlloc(allocator) orelse return .success;
+defer allocator.free(raw);
+const parsed = try std.json.parseFromSlice(MyConfig, allocator, raw, .{});
+defer parsed.deinit();
+```
+
+Returning `.invalid_config` from `start()` when the parse fails is
+the convention — the host surfaces it as a startup error rather than
+letting the plugin run half-configured.
+
 ### `guest` (`src/guest.zig`)
 
-Functions the guest implements for the host to call into. Today the
-allocator pair the processor/exporter ABI needs:
+Functions the guest implements for the host to call into, and the
+types they are declared against. Today the allocator pair the
+processor/exporter path needs:
 
 - `alloc(size: u32) -> u32` — reserve a buffer in the guest's linear
   memory, return its offset, or `0` on failure. Backed by
@@ -266,6 +308,20 @@ The wire-name prefix is what lets Rust plugins (which link wasi-libc
 and inherit a `free` symbol) avoid a duplicate-symbol error at link
 time. Zig doesn't link libc and could survive either name; we use
 the prefixed names everywhere for symmetry.
+
+Plus `StartResult`, the type `start()` is declared against:
+
+```zig
+export fn start() guest.StartResult {
+    // …
+    return .success;
+}
+```
+
+It's a non-exhaustive `enum(i32)` — `success = 0`, `failure = 1`,
+`invalid_config = 2` — so a plugin can return a code the host doesn't
+know yet without the enum becoming a breaking change. The host treats
+anything non-zero as a failed start.
 
 ### `otel_pipeline_data` (`src/pipeline.zig`)
 

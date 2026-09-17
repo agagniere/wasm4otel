@@ -9,7 +9,7 @@ This file provides guidance to LLMs when working with code in this repository.
 The repo has two top-level pieces:
 
 - `go/` — the host. Single Go module (`github.com/agagniere/wasm4otel/go`) with four packages: a shared `wasm4otel` package holding the `Component` type and host imports, plus three role packages (`go/receiver`, `go/processor`, `go/exporter`) each exposing `NewFactory()`.
-- `zig/` — example guest plugins built in Zig (one freestanding, one WASI preview1 reactor) plus shared modules.
+- `zig/` — example guest plugins built in Zig (three freestanding, two WASI preview1 reactors) plus shared modules.
 
 ## Host/guest ABI
 
@@ -19,7 +19,7 @@ Host imports exposed in the `env` module (called from the guest):
 - `host_log(level: i32, ptr, size)` — level matches `go.uber.org/zap/zapcore.Level` (debug=-1, info=0, …). The Zig side mirrors this in `zig/src/log.zig`'s `LogLevel` enum.
 - `push_logs(ptr, size) -> i32` / `push_metrics(ptr, size) -> i32` / `push_traces(ptr, size) -> i32` — bytes are an OTLP-encoded `LogsData` / `MetricsData` / `TracesData` protobuf. Returns 0 on success, non-zero error code otherwise (1 = bad memory read, 2 = decode failure, 3 = no downstream consumer, 4 = downstream consumer rejected the batch). A processor plugin calls these from inside its `consume_<signal>` to forward the transformed batch; an exporter doesn't call them (or calls them knowing the host returns 3).
 - `interruptible_sleep_ms(ms: u32) -> u32` — sleeps for up to `ms` milliseconds. Returns 0 when the duration elapsed, non-zero when the component's context fires (Shutdown). The Zig wrapper in `zig/src/host.zig` (`host` module) surfaces this as `interruptibleSleep(std.Io.Duration) error{Interrupted}!void`. Works in both freestanding and wasip1 — does not depend on any WASI plumbing.
-- `get_config(ptr: u32, size: u32) -> u32` — hands the YAML `plugin_config` map to the guest as a JSON document. Returns the document's true byte length. If `size >= true_size`, writes the bytes at `ptr`; if `size < true_size`, writes nothing so the guest can re-allocate and call again. Returns 0 when YAML didn't set `plugin_config`. Probe with `(0, 0)` to learn the size without touching memory. The Zig wrapper `host.getConfig(allocator)` returns `?[]u8` (caller frees).
+- `get_config(ptr: u32, size: u32) -> u32` — hands the YAML `plugin_config` map to the guest as a JSON document. Returns the document's true byte length. If `size >= true_size`, writes the bytes at `ptr`; if `size < true_size`, writes nothing so the guest can re-allocate and call again. Returns 0 when YAML didn't set `plugin_config`. Probe with `(0, 0)` to learn the size without touching memory. The Zig wrapper `host.getConfigAlloc(allocator)` does the probe-then-read dance and returns `std.mem.Allocator.Error!?[]u8` (caller frees; `null` means no `plugin_config`).
 
 Guest exports the host calls:
 - `start() -> i32` — invoked from `Start(ctx, host)`. Returns `0 = success`, `1 = generic failure`, `2 = invalid user-provided config`; the host surfaces non-zero as an `error` from `Start` (processor/exporter) or cancels the component context (receiver). Guests should `host_log` their own detail before returning non-zero. Zig plugins declare it as `export fn start() guest.StartResult` against the non-exhaustive enum in `zig/src/guest.zig`. Empty results (`() -> ()`) are accepted as success for forward-compat but the convention is the i32 return. In receiver mode start runs on a dedicated goroutine; in processor/exporter mode it runs synchronously and must return promptly.
@@ -41,7 +41,7 @@ zig build                # builds all freestanding + wasip1 plugins into zig/zig
 zig build gen-proto      # regenerate src/opentelemetry/proto/**/*.pb.zig from otelproto dep
 ```
 
-`build.zig` declares two target sets driven by the `freestanding_sources` / `wasip1_sources` arrays at the bottom — add a new plugin by appending to the right list with its filename and the symbols to export. The build emits `_initialize` (reactor) for wasip1 modules and a regular `_start` for freestanding ones.
+`build.zig` declares two target sets driven by the `freestanding_sources` / `wasip1_sources` arrays at the bottom — add a new plugin by appending to the right list with its filename and the symbols to export. `build.zig` only selects the execution model (`wasi_exec_model = .reactor` for the wasip1 set, none for freestanding) — it does not emit an entry symbol. The plugin source declares `_initialize` (reactor) or `_start` (freestanding) itself; see *Things that are easy to get wrong* below.
 
 Requires Zig **0.16.0+**. Dependencies (`protobuf`, `otelproto`) are pinned in `build.zig.zon`; `zig/UPDATE.md` has the `zig fetch --save` commands to bump them.
 

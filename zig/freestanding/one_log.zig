@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_info = @import("build_info");
 const otelData = @import("otel_pipeline_data");
 const host = @import("host");
+const guest = @import("guest");
 
 const Allocator = std.mem.Allocator;
 const LogsBatch = otelData.Logs.LogsData;
