@@ -48,9 +48,11 @@ wasm4otelexporter.NewFactory()  // exporter.Factory
 ```
 
 All three use the type name `wasm4otel`; the YAML section
-(`receivers:`/`processors:`/`exporters:`) decides the role.
-Currently only the **logs** signal is registered for each role, at
-stability level `development`.
+(`receivers:`/`processors:`/`exporters:`) decides the role. Each
+factory registers all three signals — logs, metrics and traces — at
+stability level `development`. Registering a signal is not a promise
+the *plugin* speaks it: the per-signal `createX` checks the plugin's
+export table and fails fast if it doesn't (see *Lifecycle* below).
 
 From the shared `wasm4otel` package:
 
@@ -340,9 +342,30 @@ dependency-free build. Switching to `NewRuntimeConfigCompiler` would
 likely improve plugin throughput but pulls in platform-specific
 codegen.
 
-The module config in `LoadPlugin` does not redirect `stdout` / `stderr`
-or override start functions. The commented-out lines in
-`component.go` show the wazero knobs available if you need them.
+The module config in `LoadPlugin` sets three things:
+
+```go
+config := wazero.NewModuleConfig().
+    WithStartFunctions("_start", "_initialize").
+    WithSysWalltime().
+    WithSysNanotime()
+```
+
+`WithStartFunctions` covers both module flavours (see *ABI strings*
+above). The two clock toggles opt out of wazero's frozen defaults so
+`clock_time_get` reports real time rather than `2022-01-01T00:00:00Z`.
+
+Two determinism toggles are deliberately *not* set. `WithSysNanosleep`
+is left off because plugins pace themselves through the
+`interruptible_sleep_ms` host import, which the host can cancel on
+shutdown, rather than through a WASI sleep it has no handle on.
+`WithRandSource` is simply unwired — so a plugin calling `random_get`
+gets the same bytes on every run, and generated trace IDs collide
+across restarts. Wire `WithRandSource(crypto/rand.Reader)` if that
+matters. See [`WAZERO.md`](WAZERO.md) for the full default table.
+
+`stdout` / `stderr` are not redirected; the commented-out lines in
+`component.go` show those knobs and `WithArgs` if you need them.
 
 ## Dependencies
 

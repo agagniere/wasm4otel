@@ -18,13 +18,21 @@ Only pure processors could realistically want to use this target.
 Currently it is only used for learning purposes and as a way to better
 illustrate the benefits of WASI in contrast.
 
-Two examples live here:
+Three examples live here:
 
 - `helloworld.zig` — logs through `host_log` and nothing else.
   Release build: **~1.5 KB**.
 - `one_log.zig` — builds a one-record `LogsData`, encodes it to OTLP
   protobuf via `otel_pipeline_data`, and pushes it through
   `push_logs`. Release build: **~11 KB**.
+- `severity_filter.zig` — the repo's only processor, and the case the
+  section above describes: decodes the `LogsData` batch the host hands
+  it, drops records below a severity threshold, re-encodes and
+  forwards via `push_logs`. Exports `consume_logs` plus the
+  `wasm4otel_alloc` / `wasm4otel_free` pair. Decoding needs an
+  allocator, so it runs everything through an arena over
+  `std.heap.wasm_allocator` and tears it down on return. Release
+  build: **~34 KB** — the decoder is what the other two don't pay for.
 
 `one_log.zig` answers the obvious question: **OTLP encoding is fully
 freestanding-compatible.** The protobuf encoder is pure byte-pushing
@@ -107,6 +115,8 @@ Append an entry to `freestanding_sources` in
 ```zig
 const freestanding_sources: []const OtelPlugin = &.{
     .{ .filename = "helloworld.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "one_log.zig", .symbols = &.{"start"} },
+    .{ .filename = "severity_filter.zig", .symbols = &.{ "consume_logs", "wasm4otel_alloc", "wasm4otel_free" } },
     // .{ .filename = "my_plugin.zig", .symbols = &.{ "start", "stop" } },
 };
 ```
