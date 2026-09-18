@@ -130,6 +130,6 @@ const freestanding_sources: []const OtelPlugin = &.{
 };
 
 const wasip1_sources: []const OtelPlugin = &.{
-    .{ .filename = "log_generator.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "log_generator.zig", .symbols = &.{ "wasm4otel_receive", "wasm4otel_shutdown" } },
     .{ .filename = "severity_parser.zig", .symbols = &.{"start"}, .tests = true },
 };

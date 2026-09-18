@@ -17,8 +17,14 @@ pub const std_options: std.Options = .{
 /// Use to forward log batches to the next consumer in the OTel pipeline
 extern fn push_logs(ptr: [*]const u8, size: usize) i32;
 
+// The plugin's whole ABI surface, in the order the host calls it.
+// Wire names carry the `wasm4otel_` prefix so the module's export
+// table is self-evidently the ABI; the Zig functions behind them
+// don't need it.
 comptime {
     @export(&init, .{ .name = "_initialize" });
+    @export(&receive, .{ .name = "wasm4otel_receive" });
+    @export(&shutdown, .{ .name = "wasm4otel_shutdown" });
 }
 
 /// Entry point of this plugin
@@ -37,8 +43,13 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
     });
 }
 
-/// Begin logs reception
-export fn start() guest.StartResult {
+/// The receiver's long-running loop, which the host runs on a
+/// dedicated goroutine so it doesn't block collector startup.
+/// Shutdown cancels the component's context, which surfaces here as
+/// `error.Interrupted` out of `interruptibleSleep` and unwinds the
+/// loop. This plugin has nothing to late-init, so it exports no
+/// `wasm4otel_start`.
+fn receive() callconv(.{ .wasm_mvp = .{} }) guest.StartResult {
     var arena: std.heap.ArenaAllocator = .init(std.heap.wasm_allocator);
     defer arena.deinit();
     const alloc: Allocator = arena.allocator();
@@ -70,8 +81,9 @@ export fn start() guest.StartResult {
     return .success;
 }
 
-/// End logs reception
-export fn stop() void {
+/// End logs reception. The host calls this only once the receive loop
+/// has drained.
+fn shutdown() callconv(.{ .wasm_mvp = .{} }) void {
     std.log.info("So long !", .{});
 }
 
