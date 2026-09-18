@@ -4,7 +4,7 @@ Quick reference for which WASM features are part of which spec version
 and which are tracked as separate "proposals". Wasmtime is used here
 as the reference implementation because it is the most up-to-date
 runtime; per-host coverage for this project lives in
-[`go/WAZERO.md`](go/WAZERO.md), and toolchain coverage in
+[`go/wazero/WAZERO.md`](go/wazero/WAZERO.md), and toolchain coverage in
 [`zig/WASM.md`](zig/WASM.md).
 
 ## How WASM evolves
@@ -167,6 +167,6 @@ For this project the binding constraint is not the spec, and not Zig —
 it's wazero, which implements **2.0 and nothing from 3.0 by default**,
 with five proposals available as experimental opt-ins. So the portable
 target here stays roughly WASM 2.0 even though 3.0 features are
-shipping in Wasmtime and browsers. See [`go/WAZERO.md`](go/WAZERO.md)
+shipping in Wasmtime and browsers. See [`go/wazero/WAZERO.md`](go/wazero/WAZERO.md)
 for the exact list and [`zig/WASM.md`](zig/WASM.md) for which Zig CPU
 models stay inside it.
