@@ -132,6 +132,10 @@ wasm4otelprocessor.NewFactory()
 wasm4otelexporter.NewFactory()
 ```
 
+[`go/README.md`](go/README.md#adding-the-components-to-an-ocb-manifest)
+has a builder manifest wiring all three, and the two fields you have
+to spell out because they share one Go module.
+
 Each factory uses the type name `wasm4otel`; the YAML disambiguates
 them by which pipeline section the entry appears under:
 
