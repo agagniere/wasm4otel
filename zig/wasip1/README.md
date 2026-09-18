@@ -30,7 +30,8 @@ surface includes:
   pre-opens. The Go side does *not* preopen anything today, so this
   is theoretical until `LoadPlugin` calls `WithFSConfig(...)`.
 - **Randomness** — `random_get`. Needed by anything generating
-  trace IDs, span IDs, UUIDs.
+  trace IDs, span IDs, UUIDs. The host wires `crypto/rand.Reader`, so
+  `std.crypto.random` gets real entropy rather than a replayed stream.
 - **Args / env vars** — `args_get` / `environ_get`. Wazero's
   `WithArgs` / `WithEnv` are not wired today.
 
@@ -44,19 +45,29 @@ Wazero is reproducible-by-default. Until the embedder opts in, the
 WASI calls a plugin can reach return frozen values rather than
 hitting the OS:
 
-| WASI call         | Default behaviour       | Wazero opt-in            |
-| ----------------- | ----------------------- | ------------------------ |
-| `clock_time_get`  | fixed `2022-01-01T00:00:00Z` (realtime) / 1 ns counter (monotonic) | `WithSysWalltime()`, `WithSysNanotime()` |
-| `poll_oneoff`     | returns immediately     | `WithSysNanosleep()`     |
-| `random_get`      | seeded deterministic stream | `WithRandSource(io.Reader)` |
+| WASI call         | Default behaviour       | Wazero opt-in            | Wired in `LoadPlugin`? |
+| ----------------- | ----------------------- | ------------------------ | ---------------------- |
+| `clock_time_get`  | fixed `2022-01-01T00:00:00Z` (realtime) / 1 ns counter (monotonic) | `WithSysWalltime()`, `WithSysNanotime()` | yes, both |
+| `random_get`      | seeded deterministic stream | `WithRandSource(io.Reader)` | yes, `crypto/rand.Reader` |
+| `poll_oneoff`     | returns immediately     | `WithSysNanosleep()`     | **no** — see below |
 
 A plugin that calls `Clock.now`, sleeps, or generates random bytes
 silently gets stubbed values unless the host configured the matching
-opt-in. If your plugin needs real (non-deterministic) values, ensure
-the corresponding `With…` is wired on the wazero `ModuleConfig`
-host-side. If a `time_unix_nano` is stuck in 2022 or trace IDs
-collide across runs, this is the cause. See
-[`../../go/WAZERO.md`](../../go/WAZERO.md) for the full table.
+opt-in — no trap, no error, just frozen values. This repo's host wires
+the clocks and the random source, so `Clock.now` and `std.crypto.random`
+behave normally under it.
+
+`WithSysNanosleep` is left off on purpose: pace with
+`host.interruptibleSleep` instead, which the host can cancel on
+shutdown. A WASI sleep returns immediately here, so an "every N
+seconds" loop built on `Io.Threaded.io().sleep(...)` will spin.
+
+None of this is guaranteed by the plugin's target — it is the
+embedder's choice. A plugin running under a different host (or under
+`wasmtime` for tests) sees whatever that embedder configured, so don't
+treat real time and real entropy as properties of `wasm32-wasi`
+itself. See [`../../go/WAZERO.md`](../../go/WAZERO.md) for the full
+table.
 
 ## Memory ownership of OTLP structs — use an arena
 

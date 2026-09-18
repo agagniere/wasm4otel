@@ -7,6 +7,7 @@ import (
 	std_io "io"
 	std_json "encoding/json"
 	std_os "os"
+	std_rand "crypto/rand"
 	std_sync "sync"
 	std_time "time"
 
@@ -440,10 +441,20 @@ func (self *Component) LoadPlugin() error {
 		return err
 	}
 
+	// Opt out of wazero's deterministic defaults: without these, a
+	// guest sees a frozen 2022-01-01 wall clock and a fixed random
+	// stream. Telemetry needs real timestamps, and trace/span IDs have
+	// to be unpredictable and unique across restarts — a seeded source
+	// would hand every collector instance the same IDs.
+	// WithSysNanosleep is deliberately left out: plugins pace
+	// themselves through the interruptible_sleep_ms host import, which
+	// Shutdown can cancel, rather than a WASI sleep we have no handle
+	// on.
 	config := wazero.NewModuleConfig().
 		WithStartFunctions("_start", "_initialize").
 		WithSysWalltime().
-		WithSysNanotime()
+		WithSysNanotime().
+		WithRandSource(std_rand.Reader)
 	//WithStdout(std_os.Stdout).
 	//WithStderr(std_os.Stderr)
 	//WithArgs("toto", "foo")

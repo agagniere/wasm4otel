@@ -342,27 +342,29 @@ dependency-free build. Switching to `NewRuntimeConfigCompiler` would
 likely improve plugin throughput but pulls in platform-specific
 codegen.
 
-The module config in `LoadPlugin` sets three things:
+The module config in `LoadPlugin` sets four things:
 
 ```go
 config := wazero.NewModuleConfig().
     WithStartFunctions("_start", "_initialize").
     WithSysWalltime().
-    WithSysNanotime()
+    WithSysNanotime().
+    WithRandSource(std_rand.Reader)
 ```
 
 `WithStartFunctions` covers both module flavours (see *ABI strings*
-above). The two clock toggles opt out of wazero's frozen defaults so
-`clock_time_get` reports real time rather than `2022-01-01T00:00:00Z`.
+above). The other three opt out of wazero's deterministic defaults:
+without them `clock_time_get` reports `2022-01-01T00:00:00Z` and
+`random_get` replays a fixed stream. Telemetry needs real timestamps,
+and trace/span IDs have to be unpredictable and unique across
+restarts — a seeded source would hand every collector instance the
+same IDs.
 
-Two determinism toggles are deliberately *not* set. `WithSysNanosleep`
-is left off because plugins pace themselves through the
+One determinism toggle is deliberately left off. `WithSysNanosleep`
+stays unset because plugins pace themselves through the
 `interruptible_sleep_ms` host import, which the host can cancel on
-shutdown, rather than through a WASI sleep it has no handle on.
-`WithRandSource` is simply unwired — so a plugin calling `random_get`
-gets the same bytes on every run, and generated trace IDs collide
-across restarts. Wire `WithRandSource(crypto/rand.Reader)` if that
-matters. See [`WAZERO.md`](WAZERO.md) for the full default table.
+shutdown, rather than through a WASI sleep it has no handle on. See
+[`WAZERO.md`](WAZERO.md) for the full default table.
 
 `stdout` / `stderr` are not redirected; the commented-out lines in
 `component.go` show those knobs and `WithArgs` if you need them.
