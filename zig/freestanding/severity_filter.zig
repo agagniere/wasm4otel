@@ -17,8 +17,10 @@ pub const std_options: std.Options = .{
 /// Forwarding path to the next consumer in the OTel pipeline.
 extern fn push_logs(ptr: [*]const u8, size: usize) i32;
 
+// The plugin's whole ABI surface, in the order the host calls it.
 comptime {
     @export(&init, .{ .name = "_start" });
+    @export(&processLogs, .{ .name = "wasm4otel_process_logs" });
     @export(&guest.alloc, .{ .name = "wasm4otel_alloc" });
     @export(&guest.free, .{ .name = "wasm4otel_free" });
 }
@@ -39,7 +41,13 @@ const min_severity: i32 = 9; // SEVERITY_NUMBER_INFO
 /// wrote into our linear memory via `wasm4otel_alloc`. Decode,
 /// filter, re-encode, forward via `push_logs`. The host calls
 /// `wasm4otel_free` as soon as we return — do not retain the pointer.
-export fn consume_logs(ptr: [*]const u8, size: usize) i32 {
+///
+/// The `process_` half of the batch ABI rather than `export_`: this
+/// plugin hands its result to the next consumer, which is what makes
+/// it a processor. An exporter is terminal and would export
+/// `wasm4otel_export_logs` instead — a plugin that works as either
+/// exports both names over one shared function.
+fn processLogs(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
     var arena: std.heap.ArenaAllocator = .init(std.heap.wasm_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
