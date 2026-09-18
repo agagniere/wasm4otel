@@ -64,7 +64,7 @@ Anything that would normally go through WASI is unavailable:
 | ------------------------------------ | --------------------------------------------------------- |
 | `std.fs.*` (files, dirs)             | needs `fd_*` from `wasi_snapshot_preview1`                |
 | `std.Io.Clock.now(.real, io)` etc.   | needs `clock_time_get`                                    |
-| `std.crypto.random` via the OS path  | needs `random_get`                                        |
+| `std.crypto.random` via the OS path  | needs `random_get` — no entropy source at all here        |
 | Sleep via `Io.Threaded.io().sleep(...)` | needs `poll_oneoff` — but `host.interruptibleSleep` from the `host` module works here |
 | `std.process.argsAlloc`, env vars    | needs `args_get` / `environ_get`                          |
 | Writing to stdout / stderr           | needs `fd_write` on fd 1/2                                |
@@ -78,10 +78,18 @@ import on the Go side.
 
 The constraint shows up in `one_log.zig`: with no real-time clock
 available, `time_unix_nano` and `observed_time_unix_nano` are left at
-their default of `0`. A freestanding plugin that needs an honest
+their default of `0`. A freestanding plugin that needs a real
 timestamp has to either receive it from the host (e.g. as an extra
 parameter to `start`, or via a new `host_now()` import) or move to
 the WASIp1 target.
+
+Randomness has the same shape. `random_get` is a WASI call, so
+there is no entropy source here at all — not even a seeded one —
+which rules out generating trace IDs, span IDs or UUIDs in-plugin.
+The host wires `crypto/rand.Reader` for WASI plugins
+(see [`../../go/WAZERO.md`](../../go/WAZERO.md)), so a plugin that
+needs IDs belongs in [`../wasip1/`](../wasip1/) or must take them
+from the host.
 
 Pacing is *not* on this list of constraints — `host.interruptibleSleep`
 is a host import, not WASI plumbing, so freestanding plugins can loop

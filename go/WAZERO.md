@@ -159,22 +159,38 @@ The opt-in toggles on `wazero.NewModuleConfig()`:
 | `WithSysNanosleep()`        | `poll_oneoff` actually sleeps for the requested duration.                   |
 | `WithRandSource(io.Reader)` | Replaces the random source. Pass `crypto/rand.Reader` for unpredictability. |
 
-`LoadPlugin` wires only the first two, alongside
-`WithStartFunctions("_start", "_initialize")`. That is deliberate for
-sleep — plugins pace themselves through the `interruptible_sleep_ms`
-host import, which the host can cancel on shutdown, rather than
-through a WASI sleep it has no handle on. It is **not** deliberate for
-randomness: `WithRandSource` is simply unwired, so any plugin calling
-`random_get` gets the same bytes on every run.
+`LoadPlugin` wires three of the four, alongside
+`WithStartFunctions("_start", "_initialize")`:
+
+```go
+config := wazero.NewModuleConfig().
+    WithStartFunctions("_start", "_initialize").
+    WithSysWalltime().
+    WithSysNanotime().
+    WithRandSource(std_rand.Reader)
+```
+
+`WithRandSource` gets `crypto/rand.Reader`, so `random_get` returns
+real entropy: trace and span IDs have to be unpredictable and unique
+across restarts, and a seeded stream would hand every collector
+instance the same IDs. Note this makes plugin runs non-reproducible by
+construction — a plugin whose *own* tests want repeatable bytes should
+build its own `ModuleConfig` with a fixed `io.Reader` rather than
+expect `LoadPlugin`'s.
+
+`WithSysNanosleep` is the one left off, and that is deliberate:
+plugins pace themselves through the `interruptible_sleep_ms` host
+import, which the host can cancel on shutdown, rather than through a
+WASI sleep it has no handle on.
 
 Common symptoms:
 
 - `time_unix_nano` stuck at `1640995200000000000` (2022-01-01) →
   `WithSysWalltime()` is not wired. (It is, in `LoadPlugin` — so this
   points at a `ModuleConfig` built somewhere else.)
-- Trace IDs / UUIDs collide across collector restarts → expected
-  today; `random_get` is deterministic until someone wires
-  `WithRandSource(crypto/rand.Reader)`.
+- Trace IDs / UUIDs identical across collector restarts → same story:
+  `WithRandSource` is wired in `LoadPlugin`, so a repeating stream
+  means some other `ModuleConfig` instantiated the module.
 - A plugin's "every N seconds" loop returns immediately instead of
   pacing → it's calling a WASI sleep rather than
   `interruptible_sleep_ms`.
