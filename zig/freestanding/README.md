@@ -9,30 +9,60 @@ modules. This document covers the freestanding target in particular.
 
 ## When to use this target
 
-The interest of the freestanding target in the context of OpenTelemetry
-collector components is quite limited: no system calls means no access
-to external ressources like files, network, clocks.
+Everything the host offers through its `env` module works here:
+`host_log`, `push_logs` / `push_metrics` / `push_traces`,
+`interruptible_sleep_ms` and `get_config` are plain wasm imports, not
+WASI calls. A freestanding plugin can therefore log, receive batches,
+forward them, pace a loop and read its own config — and the entire
+guest ABI is reachable, which `helloworld.zig` demonstrates by
+exporting all twelve names.
 
-Only pure processors could realistically want to use this target.
+What's unavailable is everything that would go through WASI: no
+clocks, no files, no network, no entropy, no stdout. That is what
+decides which roles fit.
 
-Currently it is only used for learning purposes and as a way to better
-illustrate the benefits of WASI in contrast.
+- **Processors** fit best. The batch arrives in linear memory and
+  leaves through a host import, so a transform that needs nothing but
+  the bytes it was handed — filter, rewrite, enrich from config — is
+  fully served. `severity_filter.zig` is the shape.
+- **Receivers** work, but only for telemetry the plugin can produce
+  without a clock or entropy: no real `time_unix_nano`, no generated
+  trace or span IDs. `one_log.zig` shows the constraint rather than
+  working around it. A receiver that polls anything outside the module
+  belongs in [`../wasip1/`](../wasip1/).
+- **Exporters** are the weakest fit — terminal by definition, but with
+  no network and no filesystem there is nowhere for the batch to go
+  except back out through `host_log`.
+
+The upside is a module with nothing linked in to support a syscall
+layer it never uses, and none of the determinism caveats WASI brings
+under wazero (see [`../wasip1/README.md`](../wasip1/README.md)) —
+there is no frozen clock to be surprised by if you never call one.
 
 Three examples live here:
 
-- `helloworld.zig` — logs through `host_log` and nothing else.
-  Release build: **~1.5 KB**.
-- `one_log.zig` — builds a one-record `LogsData`, encodes it to OTLP
-  protobuf via `otel_pipeline_data`, and pushes it through
-  `push_logs`. Release build: **~11 KB**.
-- `severity_filter.zig` — the repo's only processor, and the case the
-  section above describes: decodes the `LogsData` batch the host hands
-  it, drops records below a severity threshold, re-encodes and
-  forwards via `push_logs`. Exports `consume_logs` plus the
-  `wasm4otel_alloc` / `wasm4otel_free` pair. Decoding needs an
-  allocator, so it runs everything through an arena over
-  `std.heap.wasm_allocator` and tears it down on return. Release
-  build: **~34 KB** — the decoder is what the other two don't pay for.
+- `helloworld.zig` — the ABI surface itself. It exports every name the
+  host looks up — `wasm4otel_setup`, `wasm4otel_start`,
+  `wasm4otel_receive`, `wasm4otel_shutdown`, all six
+  `wasm4otel_process_<signal>` / `wasm4otel_export_<signal>`
+  variants, and the `wasm4otel_alloc` / `wasm4otel_free` pair — each
+  one a no-op that logs through `host_log`. (Note `wasm4otel_start`,
+  the lifecycle hook, is a different export from `_start`, the entry
+  symbol discussed below; this module has both.) That makes it
+  loadable in every role and useful as nothing but a reference for the
+  names. Release build: **~3.4 KB**.
+- `one_log.zig` — a receiver: builds a one-record `LogsData`, encodes
+  it to OTLP protobuf via `otel_pipeline_data`, and pushes it through
+  `push_logs`, all from `wasm4otel_receive`. Release build: **~11 KB**.
+- `severity_filter.zig` — a processor, the best-fitting role above:
+  decodes the `LogsData` batch the host hands it, drops
+  records below a severity threshold, re-encodes and forwards via
+  `push_logs`. Exports `wasm4otel_process_logs` plus the
+  `wasm4otel_alloc` / `wasm4otel_free` pair the host needs to hand a
+  batch in. Decoding needs an allocator, so it runs everything
+  through an arena over `std.heap.wasm_allocator` and tears it down on
+  return. Release build: **~34 KB** — the decoder is what the other
+  two don't pay for.
 
 `one_log.zig` answers the obvious question: **OTLP encoding is fully
 freestanding-compatible.** The protobuf encoder is pure byte-pushing
@@ -46,8 +76,9 @@ with `wasm-tools print` shows only two imports —
 
 - **Host imports** declared as `extern fn` — they resolve against the
   `env` module the host registers.
-- **Exports** via `@export` or the `export` keyword — names listed in
-  `OtelPlugin.symbols` are made visible.
+- **Exports** via `@export(&fn, .{ .name = "wasm4otel_…" })` — the
+  wire names listed in `OtelPlugin.symbols` are the ones made
+  visible.
 - **Memory and allocation.** `std.heap.wasm_allocator` works; it grows
   the module's linear memory via `@wasmMemoryGrow` without touching
   any OS API.
@@ -78,10 +109,10 @@ import on the Go side.
 
 The constraint shows up in `one_log.zig`: with no real-time clock
 available, `time_unix_nano` and `observed_time_unix_nano` are left at
-their default of `0`. A freestanding plugin that needs a real
-timestamp has to either receive it from the host (e.g. as an extra
-parameter to `start`, or via a new `host_now()` import) or move to
-the WASIp1 target.
+their default of `0`. None of the guest exports take a timestamp
+parameter, so a freestanding plugin that needs a real one has to
+either get it from a new host import (a `host_now()` alongside
+`host_log`) or move to the WASIp1 target.
 
 Randomness has the same shape. `random_get` is a WASI call, so
 there is no entropy source here at all — not even a seeded one —
@@ -122,12 +153,20 @@ Append an entry to `freestanding_sources` in
 
 ```zig
 const freestanding_sources: []const OtelPlugin = &.{
-    .{ .filename = "helloworld.zig", .symbols = &.{ "start", "stop" } },
-    .{ .filename = "one_log.zig", .symbols = &.{"start"} },
-    .{ .filename = "severity_filter.zig", .symbols = &.{ "consume_logs", "wasm4otel_alloc", "wasm4otel_free" } },
-    // .{ .filename = "my_plugin.zig", .symbols = &.{ "start", "stop" } },
+    .{ .filename = "helloworld.zig", .symbols = &.{
+        "wasm4otel_setup", "wasm4otel_start", "wasm4otel_receive", "wasm4otel_shutdown",
+        // …plus the six batch exports and the allocator pair; see build.zig
+    } },
+    .{ .filename = "one_log.zig", .symbols = &.{"wasm4otel_receive"} },
+    .{ .filename = "severity_filter.zig", .symbols = &.{ "wasm4otel_process_logs", "wasm4otel_alloc", "wasm4otel_free" } },
+    // .{ .filename = "my_plugin.zig", .symbols = &.{ "wasm4otel_receive" } },
 };
 ```
+
+The symbols to list are the wire names for the role the plugin plays;
+[`../README.md`](../README.md#adding-a-plugin) has the mapping.
+`_start` does **not** belong in the list — wasm-lld exports the entry
+symbol on its own.
 
 The `host`, `guest`, and `otel_pipeline_data` modules are wired into
 the freestanding loop by default — see `build.zig`.

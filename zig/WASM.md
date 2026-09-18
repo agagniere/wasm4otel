@@ -165,8 +165,8 @@ The field is `?std.builtin.WasiExecModel`, and `build.zig` leaves it
 compiler when set, and it means nothing outside `os_tag = .wasi`.
 
 `wasm4otel`'s wasip1 plugins are reactors, because the host calls
-`start()` / `stop()` on lifecycle events rather than running the
-module top-to-bottom once.
+`wasm4otel_start` / `wasm4otel_shutdown` (and the batch exports) on
+lifecycle events rather than running the module top-to-bottom once.
 
 **Setting `wasi_exec_model` does not create the entry symbol.** On Zig
 0.16 the toolchain synthesizes neither `_initialize` nor `_start`; the
@@ -181,7 +181,7 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void { ... }
 ```
 
 Every plugin in this repo does this — `_initialize` in `wasip1/`,
-`_start` in `freestanding/` (see `wasip1/log_generator.zig:20-22`).
+`_start` in `freestanding/` (see `wasip1/log_generator.zig:24-28`).
 The freestanding ones have no execution model at all; `_start` there is
 just an export name the host happens to call, not a WASI concept. The
 host asks for both names —

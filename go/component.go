@@ -571,9 +571,9 @@ func (self *Component) LoadPlugin() error {
 	self.exportMetrics = instance.ExportedFunction("wasm4otel_export_metrics")
 	self.exportTraces = instance.ExportedFunction("wasm4otel_export_traces")
 
-	// The allocator pair was prefixed before the rest of the ABI was,
-	// because Rust + wasm32-wasi links wasi-libc, which already defines
-	// `free`; an unprefixed export collides at link time.
+	// The prefix earns its keep most visibly here: Rust + wasm32-wasi
+	// links wasi-libc, which already defines `free`, so an unprefixed
+	// export would collide at link time.
 	self.alloc = instance.ExportedFunction("wasm4otel_alloc")
 	self.free = instance.ExportedFunction("wasm4otel_free")
 	return nil

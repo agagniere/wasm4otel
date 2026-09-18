@@ -60,9 +60,10 @@ From the shared `wasm4otel` package:
 - `DefaultConfig() component.Config` — supplies an empty `Config`.
 - `Load(cfg, logger, mode) (*Component, error)` — the one-shot
   factory entrypoint: builds the component, registers host imports,
-  loads the plugin, and verifies mode-mandatory exports
-  (`wasm4otel_alloc` / `wasm4otel_free` for processor/exporter).
-  Each role's per-signal `createX` calls this.
+  loads the plugin, verifies the mode-mandatory exports
+  (`wasm4otel_receive` for receivers; `wasm4otel_alloc` /
+  `wasm4otel_free` for processor/exporter), then runs the guest's
+  `wasm4otel_setup` hook. Each role's per-signal `createX` calls this.
 - `Component` — the host-side type each factory builds and returns;
   satisfies `receiver.{Logs,Metrics,Traces}`,
   `processor.{Logs,Metrics,Traces}`, and
@@ -89,7 +90,7 @@ receivers:
 ## Lifecycle
 
 Every role's per-signal `createX` calls
-`wasm4otel.Load(cfg, logger, mode)`, which runs the three
+`wasm4otel.Load(cfg, logger, mode)`, which runs the
 signal-independent setup steps:
 
 1. `NewComponent` — validates config, derives a cancellable context
@@ -102,39 +103,68 @@ signal-independent setup steps:
    `interruptible_sleep_ms`, and `get_config`.
 3. `LoadPlugin` — reads the `.wasm` file from disk, instantiates the
    module (which runs `_start` or `_initialize`), stores the instance
-   for later memory access, and looks up exported functions: `start`,
-   `stop`, `consume_logs`, `consume_metrics`, `consume_traces`,
-   `wasm4otel_alloc`, `wasm4otel_free`.
+   for later memory access, and looks up twelve exported functions:
+   `wasm4otel_setup`, `wasm4otel_start`, `wasm4otel_receive`,
+   `wasm4otel_shutdown`, `wasm4otel_process_logs` / `_metrics` /
+   `_traces`, `wasm4otel_export_logs` / `_metrics` / `_traces`,
+   `wasm4otel_alloc`, `wasm4otel_free`. A missing export comes back as
+   a `nil` `api.Function`, and that nil check *is* how the host knows
+   what the plugin supports.
+4. `validateModeExports` — checks what the role needs whatever signal
+   it was wired for. Receiver mode requires `wasm4otel_receive`
+   ("plugin must export wasm4otel_receive") — without a loop there's
+   no way to push telemetry. Processor and exporter modes require the
+   allocator pair via `HasAllocFree()` ("plugin must export
+   wasm4otel_alloc and wasm4otel_free"); a guest without them is
+   genuinely incomplete rather than merely silent on one signal.
+5. `runSetup` — calls `wasm4otel_setup` if the plugin exports it, and
+   turns a non-zero return into the error `createX` hands back to the
+   framework. A plugin that doesn't export it is taken to have nothing
+   to validate.
 
-`Load` also verifies the signal-independent export contract for the
-mode: for processor/exporter modes it checks `HasAllocFree()` and
-returns a "wasm4otel <role>: plugin must export wasm4otel_alloc and
-wasm4otel_free" error if missing (a guest without them is genuinely
-incomplete). Receiver mode skips that check — receivers don't consume.
+The checks are **additive**: each asks whether the plugin exports what
+*this* role needs, never whether it also exports something for another
+role. One `.wasm` can be wired into all three YAML sections at once,
+each wiring getting its own `Component` playing exactly one role.
 
 The role package then:
 
 - Validates the signal-specific export. The processor and exporter
-  `createX` call `Component.Validate<Signal>Export()`, which checks
-  `HasConsume<Signal>()` and returns a "wasm4otel <role>: plugin does
-  not export consume_<signal>; it does not support the <signal>
-  signal" error if missing. A guest missing this is fine in general —
-  it just doesn't speak that signal, and should be wired into a
-  different pipeline. Receiver mode skips signal validation; it only
-  needs `start`.
+  `createX` call `Component.Validate<Signal>Export()`, which resolves
+  the export for *this role and this signal* —
+  `wasm4otel_process_<signal>` for a processor,
+  `wasm4otel_export_<signal>` for an exporter — and returns
+  "wasm4otel <role>: plugin does not export <export>; it does not
+  support the <signal> signal in this role" if it's absent. A guest
+  missing it is fine in general: it just doesn't speak that signal in
+  that role, and belongs in a different pipeline or section. Receiver
+  mode skips signal validation entirely — receivers are
+  signal-agnostic at the entry point, since one `wasm4otel_receive`
+  loop calls whichever `push_<signal>` it needs.
 - Stores the downstream consumer in
   `component.NextConsumer{Logs,Metrics,Traces}` (receiver and
   processor only — the exporter is terminal).
+
+Note the ordering: `wasm4otel_setup` runs inside `Load`, which is
+*before* the per-signal check in `createX`. A plugin's setup hook can
+therefore run even when the signal wiring is about to be rejected.
 
 After that, the framework calls `Start`/`Shutdown` and (for processor
 and exporter) `Consume<Signal>`/`Capabilities`. Their behavior
 branches on `mode`:
 
-| Method          | `ModeReceiver`                                                                                                  | `ModeProcessor` / `ModeExporter`                                                                  |
-|-----------------|-----------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
-| `Start`         | Spawns a goroutine that calls `start()`; returns immediately. The goroutine owns the instance until shutdown.   | Calls `start()` synchronously under `callMu`. Must return promptly.                               |
-| `Shutdown`      | Cancels the context (so any blocking host import unwinds), waits for the `start` goroutine, then calls `stop()`. | Cancels the context, calls `stop()`. No goroutine to wait for.                                    |
-| `Consume<Sig>`  | Not called.                                                                                                     | Marshals the batch and runs the `wasm4otel_alloc → write → consume_<sig> → wasm4otel_free` dance. |
+| Method          | `ModeReceiver`                                                                                                                                        | `ModeProcessor` / `ModeExporter`                                                                                            |
+|-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| `Start`         | Calls `wasm4otel_start()` synchronously under `callMu`, then spawns a goroutine running `wasm4otel_receive()` and returns. That goroutine owns the instance until shutdown. | Calls `wasm4otel_start()` synchronously under `callMu`. Must return promptly. No goroutine.                                 |
+| `Shutdown`      | Cancels the context (so any blocking host import unwinds), waits for the receive goroutine, then calls `wasm4otel_shutdown()`.                         | Cancels the context, calls `wasm4otel_shutdown()`. The `Wait` is a no-op — no goroutine to join.                            |
+| `Consume<Sig>`  | Not called.                                                                                                                                           | Marshals the batch and runs the `wasm4otel_alloc → write → wasm4otel_{process,export}_<sig> → wasm4otel_free` dance.        |
+
+`wasm4otel_start` means the same thing in every mode — short-lived
+init, must return promptly — which is why the long-running loop got
+its own name. Only a receiver-mode `Component` runs the loop, even
+when a multi-role plugin exports it: a processor has no business also
+generating telemetry, and each YAML section the plugin appears in gets
+its own instance.
 
 ## ABI strings used in this code
 
@@ -177,10 +207,11 @@ config := wazero.NewModuleConfig().
 Wazero calls each one that's present and skips ones that aren't, so a
 single config handles both module flavours.
 
-After instantiation, neither is called again — `start()` and `stop()`
-(the function names this project chose, no spec involved) are looked
-up explicitly via `instance.ExportedFunction(...)` and called on
-collector lifecycle events.
+After instantiation, neither is called again. Everything else the host
+calls is looked up explicitly via `instance.ExportedFunction(...)` and
+invoked on collector lifecycle events — those names are this project's
+choice, no spec involved, which is why they all carry the `wasm4otel_`
+prefix that `_start` and `_initialize` don't.
 
 ### `"wasi_snapshot_preview1"` — the WASI module name
 
@@ -268,15 +299,50 @@ the guest's allocator entirely — receivers don't have to export
 
 ## Guest exports (what the host looks up)
 
-| Export             | Called?                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `start`            | Yes, on `Component.Start`. Required for receivers; optional for processor/exporter. Signature `() -> i32` — see rc table below.        |
-| `stop`             | Yes, on `Component.Shutdown`. Optional in every mode.                                                                                  |
-| `consume_logs`     | Yes for processor/exporter on the logs pipeline. Invoked once per incoming batch from `Component.ConsumeLogs`.                         |
-| `consume_metrics`  | Yes for processor/exporter on the metrics pipeline. Invoked once per incoming batch from `Component.ConsumeMetrics`.                   |
-| `consume_traces`   | Yes for processor/exporter on the traces pipeline. Invoked once per incoming batch from `Component.ConsumeTraces`.                     |
-| `wasm4otel_alloc`  | Yes for processor/exporter mode. Called before each `consume_*` to reserve a buffer in the guest's linear memory.                      |
-| `wasm4otel_free`   | Yes for processor/exporter mode. Called after each `consume_*` to release the buffer.                                                  |
+Every name here carries the `wasm4otel_` prefix, so a module's export
+table is self-evidently its ABI surface. It also sidesteps the
+wasi-libc collision on `shutdown` — a plugin that links wasi-libc
+already has the POSIX socket call under that name.
+
+| Export                      | Signature              | Called?                                                                                                                       |
+| --------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `wasm4otel_setup`           | `() -> i32`            | Yes, from `Load` inside the factory's `createX`. Optional in every mode. Where `plugin_config` gets validated — rc table below. |
+| `wasm4otel_start`           | `() -> i32`            | Yes, on `Component.Start`, synchronously, in every mode. Optional. Must return promptly.                                      |
+| `wasm4otel_receive`         | `() -> i32`            | Yes, on `Component.Start`, on its own goroutine. **Required** in receiver mode, never called in the others.                    |
+| `wasm4otel_shutdown`        | `() -> ()`             | Yes, on `Component.Shutdown`. Optional in every mode.                                                                         |
+| `wasm4otel_process_logs`    | `(i32, i32) -> i32`    | Yes for a **processor** on the logs pipeline. Invoked once per incoming batch from `Component.ConsumeLogs`.                    |
+| `wasm4otel_process_metrics` | `(i32, i32) -> i32`    | Same for a processor on the metrics pipeline, from `Component.ConsumeMetrics`.                                                 |
+| `wasm4otel_process_traces`  | `(i32, i32) -> i32`    | Same for a processor on the traces pipeline, from `Component.ConsumeTraces`.                                                   |
+| `wasm4otel_export_logs`     | `(i32, i32) -> i32`    | Yes for an **exporter** on the logs pipeline. Same call site as the `process_` variant; the mode picks which one.              |
+| `wasm4otel_export_metrics`  | `(i32, i32) -> i32`    | Same for an exporter on the metrics pipeline.                                                                                 |
+| `wasm4otel_export_traces`   | `(i32, i32) -> i32`    | Same for an exporter on the traces pipeline.                                                                                  |
+| `wasm4otel_alloc`           | `(u32) -> u32`         | Yes for processor/exporter mode. Called before each batch export to reserve a buffer in the guest's linear memory.             |
+| `wasm4otel_free`            | `(u32, u32) -> ()`     | Yes for processor/exporter mode. Called after each batch export to release the buffer.                                         |
+
+A missing export resolves to a `nil` `api.Function`; that nil check is
+the whole mechanism by which the host decides what a plugin can do.
+Every lifecycle export is optional except `wasm4otel_receive` in
+receiver mode — a plugin exporting none of them still loads, it just
+does nothing on those events.
+
+### Why the batch exports are split by role
+
+`wasm4otel_process_<signal>` and `wasm4otel_export_<signal>` have
+identical signatures and the same call site. The split exists so the
+export table alone says which role the plugin was *written* for, with
+no env var and no runtime declaration:
+
+- A **processor** hands its result to the next consumer, by calling
+  `push_<signal>` before returning. `process_` is the half that
+  forwards.
+- An **exporter** is terminal. Nothing downstream is wired, so
+  `push_<signal>` from an exporter returns rc 3 (dead-end).
+
+A plugin that legitimately works as either exports both names over one
+shared internal function — in Zig, two `@export` calls pointing at the
+same `fn`. `zig/freestanding/helloworld.zig` does exactly that for all
+three signals, and its export table shows the two names resolving to
+one function.
 
 ### `wasm4otel_alloc(size: u32) -> u32`, `wasm4otel_free(ptr: u32, size: u32)`
 
@@ -295,44 +361,93 @@ own allocator (e.g. Zig's `std.heap.wasm_allocator`):
   header.
 
 The host's per-batch sequence is `wasm4otel_alloc → memory.Write →
-consume_<signal> → wasm4otel_free`, all under `Component.callMu`. If
-`consume_<signal>` traps, the host skips `wasm4otel_free` (the
-instance is poisoned and any further call may trap again or behave
-undefined-ly) and latches `Component.broken`.
+wasm4otel_{process,export}_<signal> → wasm4otel_free`, all under
+`Component.callMu`. If the batch export traps, the host skips
+`wasm4otel_free` (the instance is poisoned and any further call may
+trap again or behave undefined-ly) and latches `Component.broken`.
 
-### `start() -> i32`
+### `wasm4otel_setup() -> i32`
 
-Invoked from `Component.Start`. The return code tells the host whether
-the plugin came up cleanly:
+Invoked from `Load`, inside the factory's `createX`, after the
+mode-mandatory export check passes. This is the plugin's chance to
+pull `plugin_config` through `get_config`, validate it, and refuse it
+while the collector is still booting:
 
-| Code | Meaning                                                                                                                                          |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | Success.                                                                                                                                         |
-| 1    | Generic failure (couldn't open a port, downstream connect failed, etc.). Host surfaces it as `wasm4otel <role>: plugin start failed`.            |
-| 2    | Invalid user-provided config — the plugin parsed `get_config` and rejected it. Host surfaces it as `wasm4otel <role>: plugin reports invalid config`. |
-| _    | Forward-compatible — any unknown code is treated as generic failure with the numeric code included in the surfaced error message.                |
+| Code | Meaning                                                                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success.                                                                                                                                                      |
+| 1    | Generic failure. Surfaced as `wasm4otel <role>: plugin setup failed with code 1 (see plugin logs)`.                                                            |
+| 2    | Invalid user-provided config — the plugin parsed `get_config` and rejected it. Surfaced as `wasm4otel <role>: plugin rejected plugin_config as invalid (see plugin logs)`. |
+| _    | Forward-compatible — any unknown code is treated as generic failure, with the numeric code in the message.                                                     |
+
+Code 2 gets its own wording because it's the one an operator can act
+on: their YAML is what's wrong. Non-zero becomes the error `createX`
+returns to the framework, so the collector refuses to finish booting
+rather than failing at the first batch — which is the whole reason
+this hook exists. Zig side: `guest.SetupResult`.
+
+### `wasm4otel_start() -> i32`<br>`wasm4otel_receive() -> i32`
+
+Both are invoked from `Component.Start` and allocate their codes from
+the same enum (`guest.StartResult` on the Zig side). Config has
+already been validated by setup, so the only question left is whether
+work started: `0` for success, non-zero for failure. Any non-zero code
+is surfaced as `wasm4otel <role>: plugin <export> failed with code
+<rc> (see plugin logs)`.
+
+They differ in when they run and what a failure costs:
+
+- **`wasm4otel_start`** runs synchronously, in every mode, before
+  anything else. Short-lived init that didn't fit in setup — opening a
+  file now that config is known good. It must return promptly, because
+  the pipeline can't begin work until it does. A non-zero rc flows
+  back through `Component.Start` as an `error` and the collector fails
+  to come up.
+- **`wasm4otel_receive`** runs on a dedicated goroutine, receiver mode
+  only, spawned once `wasm4otel_start` returns success. It's the
+  long-running loop and is expected to block until shutdown cancels
+  the component context — which reaches the guest as a non-zero
+  `interruptible_sleep_ms` return. Returning early is legal (see
+  `zig/freestanding/one_log.zig`, which pushes one batch and returns);
+  the goroutine simply drains. A non-zero rc is logged at `Error` and
+  calls the component's `cancel()`, so anything blocked on its context
+  unwinds. It can't be surfaced as a `Start` error — `Start` already
+  returned.
 
 Guests should `host_log` their own detail (which key was bad, which
-port wouldn't bind) before returning non-zero — the host's wording is
-deliberately generic. For processor/exporter modes the rc flows back
-through `Component.Start` as an `error` and the collector fails to
-come up. For receiver mode the start goroutine logs at `Error` level
-and calls the component's `cancel()` so anything blocked on its
-context unwinds.
+port wouldn't bind) before returning non-zero from any of these — the
+host's wording is deliberately generic.
 
-`start()` can also return `()` if it cannot fail
+Either export may be declared `() -> ()` if it cannot fail; the host
+reads empty results as success, for forward compatibility. The
+convention is the i32 return so the plugin *can* signal failure.
 
-### `consume_logs(ptr: i32, size: i32) -> i32`<br>`consume_metrics(ptr: i32, size: i32) -> i32`<br>`consume_traces(ptr: i32, size: i32) -> i32`
+### `wasm4otel_shutdown()`
 
-Invoked once per incoming batch on the matching signal pipeline.
-`(ptr, size)` refers to a buffer the host just wrote into the guest's
-linear memory via `wasm4otel_alloc`. The guest must not retain the
-pointer past the call — the host calls `wasm4otel_free` as soon as
-`consume_<signal>` returns. Return code `0` for success, non-zero for
-plugin-side errors; the host surfaces non-zero rcs as a
-`fmt.Errorf` and the framework treats it as a batch failure. A
-processor plugin typically decodes the payload, transforms the batch,
-re-encodes, and forwards via `push_<signal>` before returning `0`.
+Invoked from `Component.Shutdown`, with no return value — by this
+point there's nothing useful the host could do with a failure, and it
+discards any results a guest declares anyway. The
+host cancels the component context first, then waits for the receive
+goroutine to drain (a no-op outside receiver mode), *then* calls this.
+So a receiver's loop is guaranteed to have unwound before shutdown
+runs.
+
+### `wasm4otel_process_<signal>(ptr: i32, size: i32) -> i32`<br>`wasm4otel_export_<signal>(ptr: i32, size: i32) -> i32`
+
+Invoked once per incoming batch on the matching signal pipeline —
+`process_` if the component is a processor, `export_` if it's an
+exporter. `(ptr, size)` refers to a buffer the host just wrote into
+the guest's linear memory via `wasm4otel_alloc`. The guest must not
+retain the pointer past the call: the host calls `wasm4otel_free` as
+soon as the export returns.
+
+Return code `0` for success, non-zero for plugin-side errors; the host
+surfaces non-zero rcs as a `fmt.Errorf` and the framework treats it as
+a batch failure. A processor plugin typically decodes the payload,
+transforms the batch, re-encodes, and forwards via `push_<signal>`
+before returning `0` — note that a processor which returns `0` without
+forwarding has silently dropped the batch, which is a legitimate
+filter and also an easy bug.
 
 ## Runtime configuration
 
