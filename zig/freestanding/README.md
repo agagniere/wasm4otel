@@ -45,12 +45,19 @@ Three examples live here:
   host looks up — `wasm4otel_setup`, `wasm4otel_start`,
   `wasm4otel_receive`, `wasm4otel_shutdown`, all six
   `wasm4otel_process_<signal>` / `wasm4otel_export_<signal>`
-  variants, and the `wasm4otel_alloc` / `wasm4otel_free` pair — each
-  one a no-op that logs through `host_log`. (Note `wasm4otel_start`,
-  the lifecycle hook, is a different export from `_start`, the entry
-  symbol discussed below; this module has both.) That makes it
-  loadable in every role and useful as nothing but a reference for the
-  names. Release build: **~3.4 KB**.
+  variants, and the `wasm4otel_alloc` / `wasm4otel_free` pair — which
+  makes it loadable in every role and the shortest reference for the
+  names. (Note `wasm4otel_start`, the lifecycle hook, is a different
+  export from `_start`, the entry symbol discussed below; this module
+  has both.) The lifecycle hooks log and return; the batch paths do
+  the least the ABI allows, which is what makes the module a
+  measuring stick: `wasm4otel_process_<signal>` hands the host's
+  buffer straight back through `push_<signal>` without decoding it,
+  so wiring it as a processor times the wasm hop and nothing else,
+  and `wasm4otel_export_<signal>` drops the batch, timing the inbound
+  half alone. Both count batches and bytes and report the totals from
+  `wasm4otel_shutdown` — a `host_log` per batch would cost more than
+  the hop being measured. Release build: **~3.7 KB**.
 - `one_log.zig` — a receiver: builds a one-record `LogsData`, encodes
   it to OTLP protobuf via `otel_pipeline_data`, and pushes it through
   `push_logs`, all from `wasm4otel_receive`. Release build: **~11 KB**.

@@ -45,8 +45,7 @@ const min_severity: i32 = 9; // SEVERITY_NUMBER_INFO
 /// The `process_` half of the batch ABI rather than `export_`: this
 /// plugin hands its result to the next consumer, which is what makes
 /// it a processor. An exporter is terminal and would export
-/// `wasm4otel_export_logs` instead — a plugin that works as either
-/// exports both names over one shared function.
+/// `wasm4otel_export_logs` instead, with no `push_logs` at the end.
 fn processLogs(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
     var arena: std.heap.ArenaAllocator = .init(std.heap.wasm_allocator);
     defer arena.deinit();

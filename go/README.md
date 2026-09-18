@@ -338,11 +338,12 @@ no env var and no runtime declaration:
 - An **exporter** is terminal. Nothing downstream is wired, so
   `push_<signal>` from an exporter returns rc 3 (dead-end).
 
-A plugin that legitimately works as either exports both names over one
-shared internal function — in Zig, two `@export` calls pointing at the
-same `fn`. `zig/freestanding/helloworld.zig` does exactly that for all
-three signals, and its export table shows the two names resolving to
-one function.
+A plugin can export both names — in Zig, two `@export` calls in the
+same `comptime` block — but forwarding is exactly the kind of
+behaviour that can't be shared between them, so the two names
+generally need two bodies. `zig/freestanding/helloworld.zig` exports
+all six: its `process_` half hands the host's buffer straight back
+through `push_<signal>`, its `export_` half drops it.
 
 ### `wasm4otel_alloc(size: u32) -> u32`, `wasm4otel_free(ptr: u32, size: u32)`
 

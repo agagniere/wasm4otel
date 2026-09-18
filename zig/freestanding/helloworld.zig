@@ -8,12 +8,17 @@ pub const std_options: std.Options = .{
     .log_level = .debug,
 };
 
+/// Forwarding paths to the next consumer in the OTel pipeline.
+extern fn push_logs(ptr: [*]const u8, size: usize) i32;
+extern fn push_metrics(ptr: [*]const u8, size: usize) i32;
+extern fn push_traces(ptr: [*]const u8, size: usize) i32;
+
 // The plugin's whole ABI surface, in the order the host calls it.
 // Nothing is left out, so this one module is loadable in every role:
 // receiver, processor on any signal, exporter on any signal. That
-// makes it the reference for *which names the host looks up* — not a
-// useful pipeline component, since nothing here pushes or forwards
-// telemetry.
+// makes it the reference for *which names the host looks up* — and,
+// since its batch paths do nothing but move bytes, a baseline for
+// what the wasm hop alone costs.
 comptime {
     @export(&init, .{ .name = "_start" });
     @export(&setup, .{ .name = "wasm4otel_setup" });
@@ -21,15 +26,18 @@ comptime {
     @export(&receive, .{ .name = "wasm4otel_receive" });
     @export(&shutdown, .{ .name = "wasm4otel_shutdown" });
 
-    // Processor and exporter differ only in whether the plugin hands
-    // its result to the next consumer, and a no-op hands on nothing
-    // either way — so one function per signal covers both names.
-    @export(&handleLogs, .{ .name = "wasm4otel_process_logs" });
-    @export(&handleLogs, .{ .name = "wasm4otel_export_logs" });
-    @export(&handleMetrics, .{ .name = "wasm4otel_process_metrics" });
-    @export(&handleMetrics, .{ .name = "wasm4otel_export_metrics" });
-    @export(&handleTraces, .{ .name = "wasm4otel_process_traces" });
-    @export(&handleTraces, .{ .name = "wasm4otel_export_traces" });
+    // The two halves of the batch ABI differ in exactly the thing
+    // these do: `process_` hands the bytes on through `push_<signal>`,
+    // `export_` is terminal. Each `process_` name needs its own
+    // function — a different import each — while dropping a batch is
+    // signal-agnostic, so one function answers to all three `export_`
+    // names.
+    @export(&processLogs, .{ .name = "wasm4otel_process_logs" });
+    @export(&processMetrics, .{ .name = "wasm4otel_process_metrics" });
+    @export(&processTraces, .{ .name = "wasm4otel_process_traces" });
+    @export(&dropBatch, .{ .name = "wasm4otel_export_logs" });
+    @export(&dropBatch, .{ .name = "wasm4otel_export_metrics" });
+    @export(&dropBatch, .{ .name = "wasm4otel_export_traces" });
 
     // The real implementations, not stubs: the host writes each batch
     // into the buffer `wasm4otel_alloc` hands back, so an allocator
@@ -79,29 +87,60 @@ fn receive() callconv(.{ .wasm_mvp = .{} }) guest.StartResult {
 }
 
 fn shutdown() callconv(.{ .wasm_mvp = .{} }) void {
-    std.log.info("So long !", .{});
+    std.log.info("So long ! Handled {d} batches ({d} bytes)", .{ batches, bytes });
 }
 
-fn handleLogs(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
-    return dropBatch("logs", ptr, size);
+/// What the batch paths saw, reported once by `shutdown`. A `host_log`
+/// per batch would cost several times the ABI hop it is meant to
+/// measure, so the batch paths only bump these counters and stay
+/// quiet. Plain globals are enough: linear memory belongs to one
+/// instance, and the host serializes every call into it.
+var batches: u64 = 0;
+var bytes: u64 = 0;
+
+/// Hands the batch straight back to the host, byte for byte:
+/// `ptr[0..size]` is still the OTLP payload the host wrote into our
+/// linear memory, and `push_logs` reads it from there without this
+/// side ever decoding it. Running this as a processor therefore costs
+/// what the wasm hop costs and nothing else — the host's marshal, the
+/// copy into linear memory, the call, then the read back out and
+/// unmarshal — which is the baseline a real processor's own work is
+/// measured against. `severity_filter.zig` is this same path with a
+/// protobuf codec in the middle.
+///
+/// `push_logs` returns 0 on success and its code travels back to the
+/// host unchanged, since nothing here can fail on its own.
+fn processLogs(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
+    count(size);
+    return push_logs(ptr, size);
 }
 
-fn handleMetrics(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
-    return dropBatch("metrics", ptr, size);
+/// As `processLogs`, for a `MetricsData` batch.
+fn processMetrics(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
+    count(size);
+    return push_metrics(ptr, size);
 }
 
-fn handleTraces(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
-    return dropBatch("traces", ptr, size);
+/// As `processLogs`, for a `TracesData` batch.
+fn processTraces(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
+    count(size);
+    return push_traces(ptr, size);
 }
 
-/// `ptr[0..size]` is the encoded OTLP batch the host wrote into our
-/// linear memory; it calls `wasm4otel_free` as soon as we return, so
-/// the pointer must not be retained. Returning 0 without forwarding
-/// means the batch ends here — wire this plugin as a processor and it
-/// will quietly swallow the pipeline, which is why it's a shape demo
-/// and not something to deploy.
-fn dropBatch(signal: []const u8, ptr: [*]const u8, size: usize) i32 {
+/// The terminal half of the pair, exported under all three
+/// `wasm4otel_export_<signal>` names: an exporter is the end of the
+/// pipeline, so the batch stops here — dropped, in this plugin's
+/// case, which is the same thing to do whatever signal it carried.
+/// This is also the inbound half of the benchmark above: wired as an
+/// exporter, the module measures what delivering a batch into wasm
+/// costs with nothing on the way out to pay for.
+fn dropBatch(ptr: [*]const u8, size: usize) callconv(.{ .wasm_mvp = .{} }) i32 {
     _ = ptr;
-    std.log.info("Dropping a {d} byte batch of {s}", .{ size, signal });
+    count(size);
     return 0;
+}
+
+fn count(size: usize) void {
+    batches += 1;
+    bytes += size;
 }
