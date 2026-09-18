@@ -2,14 +2,13 @@
 
 `wasm4otel.wit` states the plugin ABI declaratively. It is a *proposal*:
 nothing in the repo consumes it yet, and no plugin is built against it.
-Both hosts still speak the imperative core-wasm ABI documented in
-[`AGENTS.md`](../AGENTS.md); this file is what that contract looks like
-once the Component Model carries it instead.
+Both hosts still speak the imperative core-wasm ABI, documented function
+by function — signatures, return codes, why each choice — in
+[`go/wazero/README.md`](../go/wazero/README.md). This file is what that
+contract looks like once the Component Model carries it instead.
 
 It exists because the Component Model is where this ABI wants to end up,
 and `go/wazy` is the first host here that can actually run components.
-Writing the contract down in WIT is the step that turns "we should
-migrate" into something reviewable.
 
 Validate it with:
 
@@ -19,11 +18,12 @@ wasm-tools component wit interface/wasm4otel.wit
 
 ## Why a .wit at all
 
-The current arrangement keeps the contract in three places that have to
-be hand-synchronised: `Component.LoadPlugin`'s string literals, the Zig
-guests' `export fn` declarations, and the prose table in `AGENTS.md`. A
-mismatch is not a build error — it is a `nil` function pointer, or a
-plugin that loads and then misbehaves.
+The current arrangement keeps the contract in five places that have to
+be hand-synchronised: `LoadPlugin`'s string literals in *each* of the
+two hosts, the Zig guests' `export fn` declarations, the
+function-by-function reference in `go/wazero/README.md`, and the summary
+tables in the root `README.md`. A mismatch is not a build error — it is
+a `nil` function pointer, or a plugin that loads and then misbehaves.
 
 A `.wit` makes the contract one machine-readable artifact that both
 sides generate from, so a mismatch fails at build or link time.
