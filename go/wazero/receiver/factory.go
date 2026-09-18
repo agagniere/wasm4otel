@@ -7,15 +7,12 @@ import (
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_receiver "go.opentelemetry.io/collector/receiver"
 
-	wasm4otel "github.com/agagniere/wasm4otel/go"
+	wasm4otel "github.com/agagniere/wasm4otel/go/wazero"
 )
 
 // NewFactory returns the OTel receiver factory for wasm4otel plugins
-// running in receiver mode: the plugin's wasm4otel_receive drives a
-// long-running loop and pushes telemetry via the push_<signal> host
-// imports. Receivers are signal-agnostic at the entry point — one loop
-// serves whichever signals the plugin pushes — so all three createX
-// hooks require the same single export.
+// running in receiver mode: the plugin's start() drives a long-running
+// loop and pushes telemetry via the push_<signal> host imports.
 func NewFactory() otel_receiver.Factory {
 	return otel_receiver.NewFactory(
 		otel_component.MustNewType("wasm4otel"),
