@@ -39,9 +39,11 @@ src/                 Shared Zig modules consumed by plugins.
 
 freestanding/        Plugins targeting wasm32-freestanding.
   README.md          Constraints of the freestanding target.
-  helloworld.zig     Exports the ENTIRE ABI surface as no-ops, so it
-                     loads in every role. The shortest answer to
-                     "what are all the export names?".
+  helloworld.zig     Exports the ENTIRE ABI surface, so it loads in
+                     every role. The shortest answer to "what are all
+                     the export names?", and — since its batch paths
+                     only move bytes — a baseline for what the wasm
+                     hop costs.
   one_log.zig        Receiver: encodes and pushes one OTLP log record
                      from wasm4otel_receive, then returns (no clock).
   severity_filter.zig Processor: decodes a LogsData batch, drops
@@ -179,13 +181,19 @@ Two things to know:
   `///`, or the compiler rejects the file.
 
 Because `@export` takes the wire name as a string, the same Zig
-function can answer to more than one of them. That's how a plugin
-serves both the processor and exporter roles over one implementation:
+function can answer to more than one of them. That's how
+`helloworld.zig` covers all three signals in exporter mode with one
+implementation — the terminal half drops the batch without looking at
+the bytes, so nothing about it is signal-specific:
 
 ```zig
-@export(&handleLogs, .{ .name = "wasm4otel_process_logs" });
-@export(&handleLogs, .{ .name = "wasm4otel_export_logs" });
+@export(&dropBatch, .{ .name = "wasm4otel_export_logs" });
+@export(&dropBatch, .{ .name = "wasm4otel_export_metrics" });
+@export(&dropBatch, .{ .name = "wasm4otel_export_traces" });
 ```
+
+Its processor half can't be shared that way: each signal forwards
+through a different `push_<signal>` import.
 
 The host looks up the names listed in `OtelPlugin.symbols` (see
 *Adding a plugin* below); those strings are the contract, and they are

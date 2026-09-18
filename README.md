@@ -16,9 +16,9 @@ OpenTelemetry Collector components as **WebAssembly plugins**.
 > (receiver, processor, exporter). The Zig template tree covers a logs
 > receiver (`wasip1/log_generator.zig`), two logs processors
 > (`wasip1/severity_parser.zig`, `freestanding/severity_filter.zig`),
-> and a no-op that exports the whole surface
-> (`freestanding/helloworld.zig`); metrics and traces are exercised on
-> the host side but no Zig template does real work with them yet.
+> and a whole-surface template that forwards batches untouched
+> (`freestanding/helloworld.zig`); metrics and traces flow end-to-end
+> but no Zig template decodes them yet.
 > APIs will change.
 
 ## How it fits together
@@ -184,8 +184,8 @@ In any wasm-capable language:
    the host can write into your linear memory. A processor forwards
    its transformed batch downstream by importing `push_logs` and
    calling it before returning — that's the difference between the two
-   halves. A plugin that works as either exports both names over one
-   shared function.
+   halves, and the reason a plugin that exports both names generally
+   needs two different bodies behind them.
 5. **Optionally**, export `wasm4otel_setup() -> i32` to read
    `plugin_config` via `get_config` and reject bad YAML while the
    collector is still booting, and `wasm4otel_start() -> i32` for
@@ -197,8 +197,10 @@ to be readable templates — `wasip1/log_generator.zig` covers the
 receiver path; `freestanding/severity_filter.zig` and
 `wasip1/severity_parser.zig` cover the processor path including the
 `wasm4otel_alloc` / `wasm4otel_free` exports; and
-`freestanding/helloworld.zig` exports the entire surface as no-ops,
-which makes it the shortest answer to "what are all the names?".
+`freestanding/helloworld.zig` exports the entire surface, which
+makes it the shortest answer to "what are all the names?" and, because
+its batch paths move bytes without decoding them, a baseline for how
+much of a plugin's cost is the wasm hop itself.
 
 ## Reference docs
 
