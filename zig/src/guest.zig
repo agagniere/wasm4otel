@@ -3,20 +3,37 @@
 //!
 //! Helpers for plugins acting as processors or exporters: the
 //! `wasm4otel_alloc` and `wasm4otel_free` exports the host calls
-//! around `consume_*`. Plugins re-export the two functions under
-//! their wire names via `@export` at their own comptime block.
+//! around `wasm4otel_process_*` / `wasm4otel_export_*`. Plugins
+//! re-export the two functions under their wire names via `@export`
+//! at their own comptime block.
 
 const std = @import("std");
 
-/// Return type for the `start` guest export. `0 = success`,
-/// `1 = generic failure`, `2 = invalid user-provided config`; the
-/// non-exhaustive tail lets the host evolve more specific codes later
-/// without breaking the ABI. The plugin should `host_log` its own
-/// detail before returning anything non-zero.
-pub const StartResult = enum(i32) {
+/// Return type for the `wasm4otel_setup` guest export. `0 = success`,
+/// `1 = generic failure`, `2 = invalid user-provided config`. Setup is
+/// where the plugin reads `plugin_config` (see `host.getConfigAlloc`),
+/// so it is the hook that carries the config code — the host runs it
+/// inside the factory, and a non-zero return stops the collector from
+/// finishing its boot. The non-exhaustive tail lets the host evolve
+/// more specific codes later without breaking the ABI. The plugin
+/// should `host_log` its own detail before returning anything
+/// non-zero.
+pub const SetupResult = enum(i32) {
     success = 0,
     failure = 1,
     invalid_config = 2,
+    _,
+};
+
+/// Return type for the `wasm4otel_start` and `wasm4otel_receive`
+/// guest exports. `0 = success`, `1 = generic failure`. Config has
+/// already been validated by setup at this point, so the only question
+/// left is whether work started — hence no `invalid_config`. Same
+/// non-exhaustive tail and same `host_log` convention as
+/// `SetupResult`.
+pub const StartResult = enum(i32) {
+    success = 0,
+    failure = 1,
     _,
 };
 
