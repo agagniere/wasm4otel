@@ -7,8 +7,8 @@ platform-specific build steps, no shared library to ship.
 
 This file covers which wasm features wazero implements, and how that
 constrains the `.wasm` modules a collector can load. For the master
-list of WASM proposals see [`../WASM.md`](../WASM.md); for WASI
-revisions see [`../WASI.md`](../WASI.md).
+list of WASM proposals see [`../../WASM.md`](../../WASM.md); for WASI
+revisions see [`../../WASI.md`](../../WASI.md).
 
 Pinned version: **v1.12.0** (see `go.mod`), the latest release as of
 this writing (29 May 2026).
@@ -24,7 +24,10 @@ wazero has two execution backends:
 
 `wasm4otel` exposes the choice as the `runtime.mode` YAML field —
 `auto` (default), `interpreter`, or `compiled` — see
-[`go/README.md`](README.md#runtime-configuration) for which to pick.
+[`go/wazero/README.md`](README.md#runtime-configuration) for which to
+pick. The [`go/wazy`](../wazy/README.md) host takes the same field
+with the same three values, since wazy inherits wazero's three
+runtime-config constructors.
 Both backends implement the same feature set — including v1.12.0's new
 proposals, which have real lowerings in the compiler frontend, not
 stubs — so the choice is purely performance vs portability.
@@ -87,7 +90,7 @@ entire **component model**.
 Also unsupported, and worth naming because Zig *can* emit it: `fp16`.
 Wasmtime doesn't implement it either — it's only phase 2 — so this one
 isn't a wazero gap so much as a way to build a module no host will
-run. See [`../zig/WASM.md`](../zig/WASM.md).
+run. See [`../../zig/WASM.md`](../../zig/WASM.md).
 
 `branch-hinting` is a special case: it rides in a custom section, and
 wazero skips custom sections it doesn't recognize (it only

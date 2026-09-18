@@ -125,7 +125,7 @@ Randomness has the same shape. `random_get` is a WASI call, so
 there is no entropy source here at all — not even a seeded one —
 which rules out generating trace IDs, span IDs or UUIDs in-plugin.
 The host wires `crypto/rand.Reader` for WASI plugins
-(see [`../../go/WAZERO.md`](../../go/WAZERO.md)), so a plugin that
+(see [`../../go/wazero/WAZERO.md`](../../go/wazero/WAZERO.md)), so a plugin that
 needs IDs belongs in [`../wasip1/`](../wasip1/) or must take them
 from the host.
 

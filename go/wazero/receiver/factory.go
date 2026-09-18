@@ -7,7 +7,7 @@ import (
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_receiver "go.opentelemetry.io/collector/receiver"
 
-	wasm4otel "github.com/agagniere/wasm4otel/go"
+	wasm4otel "github.com/agagniere/wasm4otel/go/wazero"
 )
 
 // NewFactory returns the OTel receiver factory for wasm4otel plugins
