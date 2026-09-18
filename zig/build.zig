@@ -124,7 +124,7 @@ const OtelPlugin = struct {
 };
 
 const freestanding_sources: []const OtelPlugin = &.{
-    // Exports the whole v2 surface as no-ops, so it loads in every role.
+    // Exports the whole ABI surface as no-ops, so it loads in every role.
     .{ .filename = "helloworld.zig", .symbols = &.{
         "wasm4otel_setup",
         "wasm4otel_start",

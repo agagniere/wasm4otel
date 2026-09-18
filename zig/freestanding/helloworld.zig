@@ -9,11 +9,11 @@ pub const std_options: std.Options = .{
 };
 
 // The plugin's whole ABI surface, in the order the host calls it.
-// Every export v2 defines is here, so this one module is loadable in
-// every role: receiver, processor on any signal, exporter on any
-// signal. That makes it the reference for *which names the host looks
-// up* — not a useful pipeline component, since nothing here pushes or
-// forwards telemetry.
+// Nothing is left out, so this one module is loadable in every role:
+// receiver, processor on any signal, exporter on any signal. That
+// makes it the reference for *which names the host looks up* — not a
+// useful pipeline component, since nothing here pushes or forwards
+// telemetry.
 comptime {
     @export(&init, .{ .name = "_start" });
     @export(&setup, .{ .name = "wasm4otel_setup" });

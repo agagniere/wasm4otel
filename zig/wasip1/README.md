@@ -2,8 +2,12 @@
 
 Plugins built for `wasm32-wasi` (preview 1) using the **reactor**
 execution model. The host instantiates them once, calls `_initialize`,
-then drives the lifecycle through `start` / `stop` / future
-`consume_logs` etc. exports.
+then drives the lifecycle through the `wasm4otel_`-prefixed exports:
+`wasm4otel_setup`, `wasm4otel_start`, `wasm4otel_receive`,
+`wasm4otel_process_<signal>` / `wasm4otel_export_<signal>`, and
+`wasm4otel_shutdown`. The prefix is what keeps `wasm4otel_start`
+distinct from `_initialize` / `_start`, the entry symbol wasm-ld
+requires.
 
 See [`../README.md`](../README.md) for the build system, shared
 modules, and the host-ABI conventions that apply to every Zig
@@ -124,26 +128,40 @@ plugins instantiate the same way from the host's point of view.
 
 ## Plugins in this folder
 
-- **`log_generator.zig`** — emits a batch of OTLP `LogRecord`s with
-  real `time_unix_nano` / `observed_time_unix_nano`, encodes via
-  `otel_pipeline_data`, and pushes through `push_logs`. Loops a
-  fixed number of times, pacing batches with `host.interruptibleSleep`.
-  The host runs `start.Call(...)` on a dedicated goroutine, so the
-  loop doesn't block collector startup. `Shutdown` cancels the
-  component's context, which makes `interruptible_sleep_ms` return
-  non-zero on its `select`'s `<-ctx.Done()` arm; the Zig wrapper
-  surfaces that as `error.Interrupted`, the loop's `try` unwinds
-  the iteration's `defer`s, `start` returns, the goroutine drains,
-  and `stop` runs. Shutdown latency is sub-millisecond regardless
-  of the sleep interval, and the path doesn't depend on wazero's
-  ctx-cancellation semantics or on `WithSysNanosleep` being wired.
-- **`severity_parser.zig`** — small textual-severity → OTLP
-  `SeverityNumber` parser with `test {}` blocks. Demonstrates the
-  `zig build test -fwasmtime` flow; see the *Tests* section of
-  [`../README.md`](../README.md). Note the
-  `if (builtin.is_test)` branch on `std_options` that swaps
-  `host_log.logFn` for the default stderr logger so the test binary
-  doesn't ask wasmtime for the absent `env.host_log` import.
+- **`log_generator.zig`** — a **receiver**. Emits a batch of OTLP
+  `LogRecord`s with real `time_unix_nano` /
+  `observed_time_unix_nano`, encodes via `otel_pipeline_data`, and
+  pushes through `push_logs`. Loops a fixed number of times, pacing
+  batches with `host.interruptibleSleep`. The host calls its
+  `wasm4otel_receive` export on a dedicated goroutine, so the loop
+  doesn't block collector startup. `Shutdown` cancels the component's
+  context, which makes `interruptible_sleep_ms` return non-zero on its
+  `select`'s `<-ctx.Done()` arm; the Zig wrapper surfaces that as
+  `error.Interrupted`, the loop's `try` unwinds the iteration's
+  `defer`s, `wasm4otel_receive` returns, the goroutine drains, and
+  `wasm4otel_shutdown` runs. Shutdown latency is sub-millisecond
+  regardless of the sleep interval, and the path doesn't depend on
+  wazero's ctx-cancellation semantics or on `WithSysNanosleep` being
+  wired.
+- **`severity_parser.zig`** — a **processor**. Decodes each `LogsData`
+  batch the host hands to `wasm4otel_process_logs`, fills in
+  `severity_number` for any record that carries a `severity_text` but
+  no number, re-encodes, and forwards via `push_logs`. Chaining it
+  ahead of [`../freestanding/severity_filter.zig`](../freestanding/severity_filter.zig)
+  is what makes that filter mean what it says: the filter thresholds
+  on the *number*, so text-only records would otherwise all read as
+  `UNSPECIFIED` (0) and get dropped wholesale.
+
+  It is also the repo's demo of the test wiring — the only source with
+  `tests = true`, covering `parseSeverity`, the batch walk, and
+  `wasm4otel_process_logs` end to end. See the *Tests* section of
+  [`../README.md`](../README.md) for the constraint that shapes it:
+  the test binary must declare no `env` imports at all, which is why
+  both `std_options` and the `forward` helper branch on
+  `builtin.is_test`. That's also the only reason it lives here rather
+  than in `freestanding/`: the shipped `.wasm` imports nothing but
+  `env.host_log` and `env.push_logs`, but its *test* binary logs to
+  stderr through `fd_write`, which is a WASI call.
 
 ## Adding a plugin
 
@@ -151,11 +169,21 @@ Append an entry to `wasip1_sources` in [`../build.zig`](../build.zig):
 
 ```zig
 const wasip1_sources: []const OtelPlugin = &.{
-    .{ .filename = "log_generator.zig",   .symbols = &.{ "start", "stop" } },
-    .{ .filename = "severity_parser.zig", .symbols = &.{"start"}, .tests = true },
-    // .{ .filename = "my_plugin.zig",    .symbols = &.{ "start", "stop" } },
+    .{ .filename = "log_generator.zig", .symbols = &.{ "wasm4otel_receive", "wasm4otel_shutdown" } },
+    .{ .filename = "severity_parser.zig", .symbols = &.{
+        "wasm4otel_start",
+        "wasm4otel_process_logs",
+        "wasm4otel_alloc",
+        "wasm4otel_free",
+    }, .tests = true },
+    // .{ .filename = "my_plugin.zig", .symbols = &.{ "wasm4otel_receive" } },
 };
 ```
+
+The symbols to list are the wire names for the role the plugin plays;
+[`../README.md`](../README.md#adding-a-plugin) has the mapping.
+`_initialize` does **not** belong in the list — wasm-lld exports the
+entry symbol on its own.
 
 `tests = true` opts the source into `zig build test -fwasmtime`.
 The `host`, `guest`, and `otel_pipeline_data` modules are wired by
