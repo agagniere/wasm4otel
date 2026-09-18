@@ -124,7 +124,21 @@ const OtelPlugin = struct {
 };
 
 const freestanding_sources: []const OtelPlugin = &.{
-    .{ .filename = "helloworld.zig", .symbols = &.{ "wasm4otel_start", "wasm4otel_shutdown" } },
+    // Exports the whole v2 surface as no-ops, so it loads in every role.
+    .{ .filename = "helloworld.zig", .symbols = &.{
+        "wasm4otel_setup",
+        "wasm4otel_start",
+        "wasm4otel_receive",
+        "wasm4otel_shutdown",
+        "wasm4otel_process_logs",
+        "wasm4otel_process_metrics",
+        "wasm4otel_process_traces",
+        "wasm4otel_export_logs",
+        "wasm4otel_export_metrics",
+        "wasm4otel_export_traces",
+        "wasm4otel_alloc",
+        "wasm4otel_free",
+    } },
     .{ .filename = "one_log.zig", .symbols = &.{"wasm4otel_receive"} },
     .{ .filename = "severity_filter.zig", .symbols = &.{ "wasm4otel_process_logs", "wasm4otel_alloc", "wasm4otel_free" } },
 };
