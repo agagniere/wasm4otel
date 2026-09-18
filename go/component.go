@@ -31,14 +31,16 @@ import (
 type ComponentMode uint8
 
 const (
-	// ModeReceiver: start() drives a long-running loop on its own
-	// goroutine; Shutdown cancels the context and joins it.
+	// ModeReceiver: wasm4otel_receive drives a long-running loop on its
+	// own goroutine; Shutdown cancels the context and joins it.
 	ModeReceiver ComponentMode = iota
-	// ModeProcessor: start() is a short-lived init; pipeline goroutines
-	// drive the guest via ConsumeLogs/Metrics/Traces.
+	// ModeProcessor: pipeline goroutines drive the guest via
+	// ConsumeLogs/Metrics/Traces, which call wasm4otel_process_<signal>.
 	ModeProcessor
-	// ModeExporter: same lifecycle as ModeProcessor, but no downstream
-	// consumer is wired — push_logs from the guest goes nowhere.
+	// ModeExporter: same lifecycle as ModeProcessor but the guest is
+	// terminal — the host calls wasm4otel_export_<signal> instead, and
+	// no downstream consumer is wired, so push_logs from the guest goes
+	// nowhere.
 	ModeExporter
 )
 
@@ -55,15 +57,26 @@ func (self ComponentMode) String() string {
 	}
 }
 
-// Return codes from the guest's `start` export. 0 = ok; 1 = generic
-// failure; 2 = invalid user-provided config. The host distinguishes
-// known codes in the surfaced error message, falling back to generic
-// failure for forward-added codes. Guests are expected to host_log
-// their own details before returning non-zero.
+// Return codes from the guest's `wasm4otel_setup` export. 0 = ok;
+// 1 = generic failure; 2 = invalid user-provided config. Setup is
+// where YAML mistakes get rejected, so it is the hook that carries the
+// config code.
 const (
-	StartSuccess       uint32 = 0
-	StartFailure       uint32 = 1
-	StartInvalidConfig uint32 = 2
+	SetupSuccess       uint32 = 0
+	SetupFailure       uint32 = 1
+	SetupInvalidConfig uint32 = 2
+)
+
+// Return codes from the guest's `wasm4otel_start` and
+// `wasm4otel_receive` exports. 0 = ok; 1 = generic failure. Config has
+// already been validated by setup at this point, so the only question
+// left is whether work started. The host distinguishes known codes in
+// the surfaced error message, falling back to generic failure for
+// forward-added codes. Guests are expected to host_log their own
+// details before returning non-zero.
+const (
+	StartSuccess uint32 = 0
+	StartFailure uint32 = 1
 )
 
 type Component struct {
@@ -79,22 +92,32 @@ type Component struct {
 
 	// pluginConfigJSON is the YAML's plugin_config map marshalled to
 	// JSON once at NewComponent time; the guest pulls it via the
-	// get_config_size / get_config host imports.
+	// get_config host import.
 	pluginConfigJSON []byte
 
-	start          wazero_api.Function
-	stop           wazero_api.Function
-	consumeLogs    wazero_api.Function
-	consumeMetrics wazero_api.Function
-	consumeTraces  wazero_api.Function
-	alloc          wazero_api.Function
-	free           wazero_api.Function
+	setup    wazero_api.Function
+	start    wazero_api.Function
+	receive  wazero_api.Function
+	shutdown wazero_api.Function
+
+	// Batch exports are role-typed as well as signal-typed, so the
+	// export table alone says which role the plugin was written for.
+	// Only the pair matching this component's mode is ever called.
+	processLogs    wazero_api.Function
+	processMetrics wazero_api.Function
+	processTraces  wazero_api.Function
+	exportLogs     wazero_api.Function
+	exportMetrics  wazero_api.Function
+	exportTraces   wazero_api.Function
+
+	alloc wazero_api.Function
+	free  wazero_api.Function
 
 	NextConsumerLogs    otel_consumer.Logs
 	NextConsumerMetrics otel_consumer.Metrics
 	NextConsumerTraces  otel_consumer.Traces
 
-	startWg std_sync.WaitGroup
+	receiveWg std_sync.WaitGroup
 
 	// callMu serializes every Call() into the wasm instance. wazero's
 	// Module.Call is single-occupant; without this two pipeline
@@ -107,11 +130,13 @@ type Component struct {
 }
 
 // Load is the one-shot factory entrypoint: it builds a Component,
-// registers the host imports, loads the plugin from disk, and verifies
-// the exports the mode requires regardless of pipeline signal — today
-// the wasm4otel_alloc / wasm4otel_free pair, skipped for ModeReceiver
-// since receivers don't consume batches. Signal-specific validation
-// (e.g. ValidateLogsExport) is the caller's responsibility.
+// registers the host imports, loads the plugin from disk, verifies the
+// exports the mode requires regardless of pipeline signal, then runs
+// the guest's wasm4otel_setup hook. Because it all happens inside the
+// factory's createX, a plugin that rejects its plugin_config stops the
+// collector from finishing its boot rather than failing at the first
+// batch. Signal-specific validation (e.g. ValidateLogsExport) is the
+// caller's responsibility and runs once this returns.
 func Load(
 	anyconfig otel_component.Config,
 	logger *uber_zap.Logger,
@@ -127,10 +152,69 @@ func Load(
 	if err = component.LoadPlugin(); err != nil {
 		return nil, err
 	}
-	if mode != ModeReceiver && !component.HasAllocFree() {
-		return nil, std_fmt.Errorf("wasm4otel %s: plugin must export wasm4otel_alloc and wasm4otel_free", mode)
+	if err = component.validateModeExports(); err != nil {
+		return nil, err
+	}
+	if err = component.runSetup(); err != nil {
+		return nil, err
 	}
 	return component, nil
+}
+
+// validateModeExports checks the exports a role needs whatever signal
+// it was wired for: a receiver needs a loop to run, a processor or
+// exporter needs to be able to take the batch the host hands it.
+// Checks are additive — a plugin exporting more than this role uses is
+// fine, it simply plays one role per Component instance.
+func (self *Component) validateModeExports() error {
+	switch self.mode {
+	case ModeReceiver:
+		if self.receive == nil {
+			return std_fmt.Errorf("wasm4otel %s: plugin must export wasm4otel_receive", self.mode)
+		}
+	case ModeProcessor, ModeExporter:
+		if !self.HasAllocFree() {
+			return std_fmt.Errorf("wasm4otel %s: plugin must export wasm4otel_alloc and wasm4otel_free", self.mode)
+		}
+	}
+	return nil
+}
+
+// runSetup invokes the guest's wasm4otel_setup export, its chance to
+// read plugin_config through get_config and refuse it. A plugin that
+// doesn't export it is taken to have nothing to validate.
+func (self *Component) runSetup() error {
+	if self.setup == nil {
+		return nil
+	}
+	results, err := self.invoke(self.context, self.setup)
+	if err != nil {
+		self.guestLogger.Warnw("setup trapped", "error", err)
+		return err
+	}
+	if err := self.setupResultError(results); err != nil {
+		self.guestLogger.Errorw("setup reported failure", "error", err)
+		return err
+	}
+	return nil
+}
+
+// setupResultError maps the guest's wasm4otel_setup return code to an
+// error. invalid_config gets its own wording because it is the code an
+// operator can act on — their YAML is what's wrong. Empty results are
+// treated as success, like the other lifecycle hooks.
+func (self *Component) setupResultError(results []uint64) error {
+	if len(results) == 0 {
+		return nil
+	}
+	switch rc := uint32(results[0]); rc {
+	case SetupSuccess:
+		return nil
+	case SetupInvalidConfig:
+		return std_fmt.Errorf("wasm4otel %s: plugin rejected plugin_config as invalid (see plugin logs)", self.mode)
+	default:
+		return std_fmt.Errorf("wasm4otel %s: plugin setup failed with code %d (see plugin logs)", self.mode, rc)
+	}
 }
 
 func NewComponent(
@@ -304,82 +388,83 @@ func (self *Component) outboundTraces(
 }
 
 func (self *Component) Start(_ std_context.Context, _ otel_component.Host) error {
-	if self.start == nil {
-		return nil
-	}
-	switch self.mode {
-	case ModeReceiver:
-		// Long-running loop owns the instance until Shutdown cancels it.
-		// Runs without callMu — the goroutine effectively holds the
-		// instance for its lifetime, and Shutdown waits for it to drain
-		// before calling stop.
-		self.startWg.Add(1)
-		go func() {
-			defer self.startWg.Done()
-			results, err := self.start.Call(self.context)
-			if err != nil {
-				// start runs outside invoke() (callMu would be useless
-				// for a lifetime-long loop), so latch broken here so the
-				// stop() invoke() in Shutdown sees the poisoned instance.
-				self.callMu.Lock()
-				self.broken = true
-				self.callMu.Unlock()
-				self.guestLogger.Warnw("start trapped", "error", err)
-				self.cancel()
-				return
-			}
-			if err := self.startResultError(results); err != nil {
-				self.guestLogger.Errorw("start reported failure", "error", err)
-				self.cancel()
-			}
-		}()
-	case ModeProcessor, ModeExporter:
-		// Synchronous init; must return promptly so the pipeline can
-		// start delivering batches via ConsumeLogs.
+	// wasm4otel_start means the same thing in every mode: short-lived
+	// init that didn't fit in setup, e.g. opening files now that the
+	// config is known to be good. It must return promptly so the
+	// pipeline can begin work.
+	if self.start != nil {
 		results, err := self.invoke(self.context, self.start)
 		if err != nil {
 			self.guestLogger.Warnw("start trapped", "error", err)
 			return err
 		}
-		if err := self.startResultError(results); err != nil {
+		if err := self.startResultError(results, "wasm4otel_start"); err != nil {
 			self.guestLogger.Errorw("start reported failure", "error", err)
 			return err
 		}
 	}
+	// Only a receiver-mode Component runs the receive loop, even though
+	// a multi-role plugin may well export it: each YAML section the
+	// plugin is wired into gets its own Component instance playing
+	// exactly one role, and a processor has no business also generating
+	// telemetry. validateModeExports guarantees the export is there.
+	if self.mode == ModeReceiver {
+		self.receiveWg.Add(1)
+		go self.receiveLoop()
+	}
 	return nil
 }
 
-// startResultError maps the guest's start return code (if any) to an
-// error. Empty results — i.e. a guest that still declares start as
-// `() -> ()` — are treated as success for backward compatibility; the
-// new convention is `() -> i32` so the plugin can signal init failure.
-func (self *Component) startResultError(results []uint64) error {
+// receiveLoop runs the guest's wasm4otel_receive export to completion
+// on its own goroutine. The loop owns the instance until Shutdown
+// cancels the context, so it runs without callMu; Shutdown waits for it
+// to drain before calling wasm4otel_shutdown.
+func (self *Component) receiveLoop() {
+	defer self.receiveWg.Done()
+	results, err := self.receive.Call(self.context)
+	if err != nil {
+		// receive runs outside invoke() (callMu would be useless for a
+		// lifetime-long loop), so latch broken here to make the shutdown
+		// invoke() in Shutdown see the poisoned instance.
+		self.callMu.Lock()
+		self.broken = true
+		self.callMu.Unlock()
+		self.guestLogger.Warnw("receive trapped", "error", err)
+		self.cancel()
+		return
+	}
+	if err := self.startResultError(results, "wasm4otel_receive"); err != nil {
+		self.guestLogger.Errorw("receive reported failure", "error", err)
+		self.cancel()
+	}
+}
+
+// startResultError maps a StartResult return code (if any) to an error.
+// Shared by wasm4otel_start and wasm4otel_receive, which allocate their
+// codes from the same enum. Empty results — a guest declaring the export
+// as `() -> ()` — are treated as success for forward compatibility; the
+// convention is `() -> i32` so the plugin can signal failure.
+func (self *Component) startResultError(results []uint64, export string) error {
 	if len(results) == 0 {
 		return nil
 	}
-	switch uint32(results[0]) {
-	case StartSuccess:
-		return nil
-	case StartInvalidConfig:
-		return std_fmt.Errorf("wasm4otel %s: plugin reports invalid config (see plugin logs)", self.mode)
-	default:
-		return std_fmt.Errorf("wasm4otel %s: plugin start failed with code %d (see plugin logs)", self.mode, uint32(results[0]))
+	if rc := uint32(results[0]); rc != StartSuccess {
+		return std_fmt.Errorf("wasm4otel %s: plugin %s failed with code %d (see plugin logs)", self.mode, export, rc)
 	}
+	return nil
 }
 
 func (self *Component) Shutdown(context std_context.Context) error {
 	// Cancel the plugin's context first so any blocking host import
 	// (interruptible_sleep_ms, push_logs) returns to the guest with a
-	// cancellation signal; the plugin's start loop unwinds on its own,
-	// then we wait. Processor/exporter modes have no goroutine to wait
-	// on, so the Wait is a no-op there.
+	// cancellation signal; the receive loop unwinds on its own, then we
+	// wait. Processor/exporter modes have no goroutine to wait on, so
+	// the Wait is a no-op there.
 	self.cancel()
-	if self.mode == ModeReceiver {
-		self.startWg.Wait()
-	}
-	if self.stop != nil {
-		if _, err := self.invoke(context, self.stop); err != nil {
-			self.guestLogger.Warnw("stop returned with error", "error", err)
+	self.receiveWg.Wait()
+	if self.shutdown != nil {
+		if _, err := self.invoke(context, self.shutdown); err != nil {
+			self.guestLogger.Warnw("shutdown returned with error", "error", err)
 		}
 	}
 	return nil
@@ -469,17 +554,26 @@ func (self *Component) LoadPlugin() error {
 		return err
 	}
 
+	// Every host-called export carries the wasm4otel_ prefix, so the
+	// module's export table is self-evidently the ABI surface. It also
+	// keeps `shutdown` from colliding with the POSIX socket call that
+	// wasi-libc defines.
 	self.instance = instance
-	self.start = instance.ExportedFunction("start")
-	self.stop = instance.ExportedFunction("stop")
+	self.setup = instance.ExportedFunction("wasm4otel_setup")
+	self.start = instance.ExportedFunction("wasm4otel_start")
+	self.receive = instance.ExportedFunction("wasm4otel_receive")
+	self.shutdown = instance.ExportedFunction("wasm4otel_shutdown")
 
-	self.consumeLogs = instance.ExportedFunction("consume_logs")
-	self.consumeMetrics = instance.ExportedFunction("consume_metrics")
-	self.consumeTraces = instance.ExportedFunction("consume_traces")
-	// Names are prefixed because Rust + wasm32-wasi links wasi-libc,
-	// which already defines `free`; an unprefixed export collides at
-	// link time. The Zig path doesn't link libc and would survive
-	// either name, but we use the same names everywhere for symmetry.
+	self.processLogs = instance.ExportedFunction("wasm4otel_process_logs")
+	self.processMetrics = instance.ExportedFunction("wasm4otel_process_metrics")
+	self.processTraces = instance.ExportedFunction("wasm4otel_process_traces")
+	self.exportLogs = instance.ExportedFunction("wasm4otel_export_logs")
+	self.exportMetrics = instance.ExportedFunction("wasm4otel_export_metrics")
+	self.exportTraces = instance.ExportedFunction("wasm4otel_export_traces")
+
+	// The allocator pair was prefixed before the rest of the ABI was,
+	// because Rust + wasm32-wasi links wasi-libc, which already defines
+	// `free`; an unprefixed export collides at link time.
 	self.alloc = instance.ExportedFunction("wasm4otel_alloc")
 	self.free = instance.ExportedFunction("wasm4otel_free")
 	return nil
@@ -493,47 +587,60 @@ func (self *Component) HasAllocFree() bool {
 	return self.alloc != nil && self.free != nil
 }
 
-// HasConsumeLogs reports whether the guest exports consume_logs.
-// Pair with HasAllocFree to know whether the logs path is wireable.
-func (self *Component) HasConsumeLogs() bool {
-	return self.consumeLogs != nil
+// logsExport returns the guest export that serves the logs signal in
+// the role this component plays, along with its ABI name for
+// diagnostics. Only meaningful for ModeProcessor / ModeExporter — a
+// receiver is never handed a batch, so neither the receiver factory nor
+// the pipeline reaches this.
+func (self *Component) logsExport() (wazero_api.Function, string) {
+	if self.mode == ModeExporter {
+		return self.exportLogs, "wasm4otel_export_logs"
+	}
+	return self.processLogs, "wasm4otel_process_logs"
+}
+
+// metricsExport: same as logsExport for the metrics signal.
+func (self *Component) metricsExport() (wazero_api.Function, string) {
+	if self.mode == ModeExporter {
+		return self.exportMetrics, "wasm4otel_export_metrics"
+	}
+	return self.processMetrics, "wasm4otel_process_metrics"
+}
+
+// tracesExport: same as logsExport for the traces signal.
+func (self *Component) tracesExport() (wazero_api.Function, string) {
+	if self.mode == ModeExporter {
+		return self.exportTraces, "wasm4otel_export_traces"
+	}
+	return self.processTraces, "wasm4otel_process_traces"
 }
 
 // ValidateLogsExport reports whether the guest can serve the logs
-// signal in this component's mode. Used by processor/exporter
-// factories' createLogs hooks; receivers don't consume so they don't
-// call this.
+// signal in the role this component was created for. Used by the
+// processor/exporter factories' createLogs hooks; receivers don't
+// consume so they don't call this. The error names the export missing
+// for *that* role: the operator either fixes the YAML section the
+// plugin sits in, or rebuilds the plugin with the export it needs.
 func (self *Component) ValidateLogsExport() error {
-	if !self.HasConsumeLogs() {
-		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_logs; it does not support the logs signal", self.mode)
-	}
-	return nil
-}
-
-// HasConsumeMetrics reports whether the guest exports consume_metrics.
-func (self *Component) HasConsumeMetrics() bool {
-	return self.consumeMetrics != nil
+	return self.validateSignalExport(self.logsExport, "logs")
 }
 
 // ValidateMetricsExport reports whether the guest can serve the
-// metrics signal in this component's mode.
+// metrics signal in the role this component was created for.
 func (self *Component) ValidateMetricsExport() error {
-	if !self.HasConsumeMetrics() {
-		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_metrics; it does not support the metrics signal", self.mode)
-	}
-	return nil
-}
-
-// HasConsumeTraces reports whether the guest exports consume_traces.
-func (self *Component) HasConsumeTraces() bool {
-	return self.consumeTraces != nil
+	return self.validateSignalExport(self.metricsExport, "metrics")
 }
 
 // ValidateTracesExport reports whether the guest can serve the traces
-// signal in this component's mode.
+// signal in the role this component was created for.
 func (self *Component) ValidateTracesExport() error {
-	if !self.HasConsumeTraces() {
-		return std_fmt.Errorf("wasm4otel %s: plugin does not export consume_traces; it does not support the traces signal", self.mode)
+	return self.validateSignalExport(self.tracesExport, "traces")
+}
+
+func (self *Component) validateSignalExport(lookup func() (wazero_api.Function, string), signal string) error {
+	fn, name := lookup()
+	if fn == nil {
+		return std_fmt.Errorf("wasm4otel %s: plugin does not export %s; it does not support the %s signal in this role", self.mode, name, signal)
 	}
 	return nil
 }
@@ -545,16 +652,20 @@ func (self *Component) Capabilities() otel_consumer.Capabilities {
 	return otel_consumer.Capabilities{MutatesData: false}
 }
 
-// ConsumeLogs marshals the batch to OTLP bytes, hands the bytes to the
-// guest via the alloc → write → consume_logs → free sequence, all under
-// callMu. The guest forwards its transformed batch via the push_logs
-// host import — that path uses NextConsumerLogs, not the return path.
+// ConsumeLogs marshals the batch to OTLP bytes and hands them to the
+// guest via the alloc → write → batch export → free sequence, all under
+// callMu. Which export that is depends on the mode: a processor gets
+// wasm4otel_process_logs and forwards its transformed batch through the
+// push_logs host import — that path uses NextConsumerLogs, not the
+// return path — while an exporter gets wasm4otel_export_logs and is
+// terminal.
 func (self *Component) ConsumeLogs(ctx std_context.Context, logs otel_logs.Logs) error {
 	payload, err := (&otel_logs.ProtoMarshaler{}).MarshalLogs(logs)
 	if err != nil {
 		return std_fmt.Errorf("marshal logs: %w", err)
 	}
-	return self.deliver(ctx, self.consumeLogs, payload, "consume_logs")
+	fn, export := self.logsExport()
+	return self.deliver(ctx, fn, payload, export)
 }
 
 // ConsumeMetrics: same shape as ConsumeLogs for the metrics signal.
@@ -563,7 +674,8 @@ func (self *Component) ConsumeMetrics(ctx std_context.Context, metrics otel_metr
 	if err != nil {
 		return std_fmt.Errorf("marshal metrics: %w", err)
 	}
-	return self.deliver(ctx, self.consumeMetrics, payload, "consume_metrics")
+	fn, export := self.metricsExport()
+	return self.deliver(ctx, fn, payload, export)
 }
 
 // ConsumeTraces: same shape as ConsumeLogs for the traces signal.
@@ -572,27 +684,28 @@ func (self *Component) ConsumeTraces(ctx std_context.Context, traces otel_traces
 	if err != nil {
 		return std_fmt.Errorf("marshal traces: %w", err)
 	}
-	return self.deliver(ctx, self.consumeTraces, payload, "consume_traces")
+	fn, export := self.tracesExport()
+	return self.deliver(ctx, fn, payload, export)
 }
 
-// deliver runs the per-batch alloc → write → consume → free dance and
+// deliver runs the per-batch alloc → write → call → free dance and
 // turns the guest's return code into a Go error. Shared by every
 // ConsumeX so the marshal step is the only signal-specific code.
-func (self *Component) deliver(ctx std_context.Context, fn wazero_api.Function, payload []byte, signal string) error {
+func (self *Component) deliver(ctx std_context.Context, fn wazero_api.Function, payload []byte, export string) error {
 	rc, err := self.callConsume(ctx, fn, payload)
 	if err != nil {
-		self.guestLogger.Errorw(signal+" failed", "error", err, "bytes", len(payload))
+		self.guestLogger.Errorw(export+" failed", "error", err, "bytes", len(payload))
 		return err
 	}
 	if rc != 0 {
-		self.guestLogger.Warnw(signal+" returned non-zero", "rc", rc, "bytes", len(payload))
-		return std_fmt.Errorf("guest %s returned %d", signal, rc)
+		self.guestLogger.Warnw(export+" returned non-zero", "rc", rc, "bytes", len(payload))
+		return std_fmt.Errorf("guest %s returned %d", export, rc)
 	}
 	return nil
 }
 
 // callConsume runs the per-batch sequence: alloc a guest-side buffer,
-// write the payload into it, invoke the consume_* export, free the
+// write the payload into it, invoke the role's batch export, free the
 // buffer. Holds callMu for the whole sequence — wazero modules are
 // single-occupant and a partial sequence must not race with anything
 // else entering the instance.

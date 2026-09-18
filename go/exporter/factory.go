@@ -10,9 +10,9 @@ import (
 )
 
 // NewFactory returns the OTel exporter factory for wasm4otel plugins
-// running in exporter mode: the host invokes the guest's consume_<signal>
-// per incoming batch, and the guest is terminal — anything it tries
-// to push via push_<signal> goes nowhere.
+// running in exporter mode: the host invokes the guest's
+// wasm4otel_export_<signal> per incoming batch, and the guest is
+// terminal — anything it tries to push via push_<signal> goes nowhere.
 func NewFactory() otel_exporter.Factory {
 	return otel_exporter.NewFactory(
 		otel_component.MustNewType("wasm4otel"),

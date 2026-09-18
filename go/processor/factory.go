@@ -11,9 +11,10 @@ import (
 )
 
 // NewFactory returns the OTel processor factory for wasm4otel plugins
-// running in processor mode: the host invokes the guest's consume_<signal>
-// per incoming batch, and the guest forwards its transformed batch
-// downstream via the matching push_<signal> host import.
+// running in processor mode: the host invokes the guest's
+// wasm4otel_process_<signal> per incoming batch, and the guest forwards
+// its transformed batch downstream via the matching push_<signal> host
+// import.
 func NewFactory() otel_processor.Factory {
 	return otel_processor.NewFactory(
 		otel_component.MustNewType("wasm4otel"),
