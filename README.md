@@ -104,8 +104,9 @@ its own component instance playing exactly one role. A plugin that
 lacks the export for the section it lives under is rejected at
 create-time with an error naming the export it's missing.
 
-The contract is spelled out in [`AGENTS.md`](AGENTS.md), and restated
-declaratively as WIT in [`interface/`](interface).
+The contract is spelled out function by function in
+[`go/wazero/README.md`](go/wazero/README.md), and restated declaratively
+as WIT in [`interface/`](interface).
 
 ## Quickstart
 
