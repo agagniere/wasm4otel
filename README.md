@@ -248,9 +248,11 @@ For what each side of *this* project supports:
 
 - Move from the hand-rolled ABI to WIT-defined Component Model
   bindings. The ABI is now written down as WIT in
-  [`interface/`](interface) as a proposal; the next steps are
-  generating host bindings from it and getting one guest to run as an
-  actual component.
+  [`interface/`](interface) as a proposal, and every world in it
+  already generates guest bindings with `wit-bindgen`. The next step is
+  getting one guest to run as an actual component; generating the *host*
+  side is work this repo has to do itself, since no Go host bindgen
+  exists — see [`interface/README.md`](interface/README.md).
 - Decide which runtime carries the Component Model migration. The
   [`go/wazy`](go/wazy/README.md) host exists because wazy supports
   components natively; the alternative is staying on wazero and using
