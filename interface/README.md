@@ -151,19 +151,76 @@ so a receive loop could pace itself against a real clock and drop this
 import entirely. That needs checking against what wazy's wasip2
 implementation actually offers.
 
+## What can be generated from it today
+
+The point of writing the ABI down declaratively is to stop
+hand-synchronising it. Every world in this file already generates
+cleanly with [wit-bindgen](https://github.com/bytecodealliance/wit-bindgen)
+0.62 — no edits needed:
+
+```sh
+wit-bindgen c        interface/ --world logs-processor --out-dir /tmp/gen
+wit-bindgen rust     interface/ --world logs-processor --out-dir /tmp/gen
+wit-bindgen markdown interface/ --world receiver       --out-dir /tmp/gen
+```
+
+What that buys, per side:
+
+| Side                | Generator                   | Status                                |
+|---------------------|-----------------------------|---------------------------------------|
+| Zig guest           | `wit-bindgen c`, via header | Available; the route Zig actually has |
+| Rust guest          | `wit-bindgen rust`          | Available; useful as a test guest     |
+| Go **host**         | —                           | Does not exist anywhere               |
+| Docs                | `wit-bindgen markdown`      | Available                             |
+
+Two things are worth knowing before planning around this.
+
+**There is no Go host bindgen.** wit-bindgen's `go` backend generates
+*guest* bindings for Go compiled to wasm, which is the opposite of what
+this repo needs. Host-side generation exists only for Rust, as
+wasmtime's `bindgen!` macro. wazy offers a dynamic component host API
+instead — `component.NewTypeTable()` builds the WIT type algebra
+(`Record`, `Variant`, `Enum`, `Result`, `List`, `Own`, `Borrow`, …) at
+runtime, and handlers take `[]component.Value`. That table is a
+structural mirror of WIT, and `wasm-tools component wit interface/ -j`
+emits the whole resolve as JSON, so generating the host glue from the
+JSON is mechanical — but it is ours to write, not something to install.
+wazy's own `component/custom_wit_test.go` is the worked example of doing
+it by hand first.
+
+**Zig has no component-model backend.** The usable path is
+`wit-bindgen c` plus a Zig `@cImport` of the generated header, compiled
+together into a wasip1 module, then `wasm-tools component new --adapt`
+with the reactor adapter — the route described in
+[Zig and the WASM Component Model](https://blog.vigoo.dev/posts/zig-wasm-component-model/).
+A community `wit-bindgen-zig` exists but is lightly maintained.
+
+The generated C header is itself the clearest evidence the WIT is the
+right shape: `wasm4otel_alloc` and `wasm4otel_free` are absent, replaced
+by the Canonical ABI's `cabi_realloc`; `get_config` is one call
+returning `option<string>` rather than the two-call probe; and the
+exports carry their interface and version in the name
+(`wasm4otel:plugin/process-logs@2.0.0#handle`), so a role mismatch is a
+link error.
+
 ## Getting from here to there
 
 Not part of this PR — sketching it out is how we find out whether the
 WIT above is the right shape.
 
-1. Generate the Go host bindings from the WIT and check them against
-   `go/wazy`'s hand-written `env` module, which is the cheapest way to
-   find out where the mapping is wrong.
-2. Port one guest to a component and run it under
-   `wazy/component.Instantiate`. `zig/freestanding/severity_filter.zig`
-   is the smallest candidate — but Zig has no component-model backend
-   today, so this likely means `wasm-tools component new` over a wasip1
-   build, or a Rust guest to prove the path before porting Zig.
+1. Prove the WIT is implementable before generating anything against
+   it: build one guest as a real component and run it under
+   `wazy/component.Instantiate`, with the host side hand-written on the
+   dynamic `TypeTable` API. A Rust guest gets there in the fewest moving
+   parts; `zig/freestanding/severity_filter.zig` is the smallest Zig
+   candidate but adds the C-header and adapter steps.
+2. Then generate the Go host glue from
+   `wasm-tools component wit interface/ -j`, once there is a
+   hand-written version to check it against. Generating first would mean
+   debugging the generator and the interface at the same time.
 3. Only once a component actually runs: add a component code path to
    `go/wazy` alongside the core-module one, and let the two coexist
    while the guests migrate.
+
+Note that step 1 and step 3 are wazy-only. wazero has no component
+support, so whichever host carries this migration, it is not that one.
