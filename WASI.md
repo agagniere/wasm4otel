@@ -8,7 +8,7 @@ and host runtime support.
 
 This file lists the revisions and what's in them. Wasmtime is used as
 the reference because it tracks the spec most closely; per-runtime
-coverage is in [`go/WAZERO.md`](go/WAZERO.md).
+coverage is in [`go/wazero/WAZERO.md`](go/wazero/WAZERO.md).
 
 ## Revision lineage
 
@@ -206,4 +206,4 @@ Preview 2 and Preview 3 are both off the table for this repo today
 regardless of toolchain: wazero implements no component model, so it
 cannot load a component at all. The routes out are swapping the
 runtime or transpiling components down to wasip1 — see
-[`go/WAZERO.md`](go/WAZERO.md) and `docs/v2_plan.md`.
+[`go/wazero/WAZERO.md`](go/wazero/WAZERO.md) and `docs/v2_plan.md`.

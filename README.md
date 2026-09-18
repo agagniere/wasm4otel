@@ -23,7 +23,7 @@ OpenTelemetry Collector components as **WebAssembly plugins**.
 
 ## How it fits together
 
-A wasm4otel component is a Go shim that owns a wazero runtime and a
+A wasm4otel component is a Go shim that owns a wasm runtime and a
 single `.wasm` module. The same shim plays three different roles
 depending on which factory is registered in the collector — receiver
 (plugin pushes telemetry from its own loop), processor (plugin
@@ -52,7 +52,8 @@ out via `push_<signal>` (one set per signal: logs, metrics, traces).
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-The host (Go, in `go/`) exposes a small set of imports the guest can
+The host (Go, in `go/`; see *Use it from a collector* for the two
+runtime modules) exposes a small set of imports the guest can
 call to **push** telemetry into the next consumer:
 
 | Import                   | Purpose                                                                   |
@@ -103,6 +104,9 @@ its own component instance playing exactly one role. A plugin that
 lacks the export for the section it lives under is rejected at
 create-time with an error naming the export it's missing.
 
+The contract is spelled out in [`AGENTS.md`](AGENTS.md), and restated
+declaratively as WIT in [`interface/`](interface).
+
 ## Quickstart
 
 ### Build the example plugin (Zig)
@@ -120,16 +124,16 @@ generates the OTLP types into `zig/src/opentelemetry/`.
 
 ### Use it from a collector
 
-`wasm4otel` is a Go module — to actually run it, register the
-factory of whichever role you need in an OpenTelemetry Collector
-distribution (e.g. via
+`wasm4otel` ships the host as a Go module — to actually run it,
+register the factory of whichever role you need in an OpenTelemetry
+Collector distribution (e.g. via
 [`ocb`](https://opentelemetry.io/docs/collector/custom-collector/)):
 
 ```go
 import (
-    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/receiver"
-    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/processor"
-    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/exporter"
+    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/wazero/receiver"
+    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/wazero/processor"
+    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/wazero/exporter"
 )
 
 // add the factories your distribution needs
@@ -138,9 +142,17 @@ wasm4otelprocessor.NewFactory()
 wasm4otelexporter.NewFactory()
 ```
 
-[`go/README.md`](go/README.md#adding-the-components-to-an-ocb-manifest)
+[`go/wazero/README.md`](go/wazero/README.md#adding-the-components-to-an-ocb-manifest)
 has a builder manifest wiring all three, and the two fields you have
 to spell out because they share one Go module.
+
+There are two interchangeable host modules:
+`github.com/agagniere/wasm4otel/go/wazero` (above) and
+`github.com/agagniere/wasm4otel/go/wazy`, which provides the same three
+factories on [wazy](https://github.com/samyfodil/wazy) — a wazero fork
+with native WASI 0.2 / Component Model support. Both speak the same
+plugin ABI, so the same `.wasm` runs under either. Import one, not
+both.
 
 Each factory uses the type name `wasm4otel`; the YAML disambiguates
 them by which pipeline section the entry appears under:
@@ -223,10 +235,16 @@ For a refresher on the underlying tech:
 
 For what each side of *this* project supports:
 
-- [`go/README.md`](go/README.md) — host package: public API, config,
-  lifecycle, host imports / guest exports.
-- [`go/WAZERO.md`](go/WAZERO.md) — wazero's feature matrix and what
-  it means for plugins this collector can load.
+- [`go/wazero/README.md`](go/wazero/README.md) — the reference host
+  package: public API, config, lifecycle, host imports / guest
+  exports.
+- [`go/wazero/WAZERO.md`](go/wazero/WAZERO.md) — wazero's feature
+  matrix and what it means for plugins this collector can load.
+- [`go/wazy/README.md`](go/wazy/README.md) — the wazy host: why a
+  second runtime, and the four places it differs from the wazero one.
+- [`interface/README.md`](interface/README.md) — the plugin ABI
+  restated as WIT, what the Component Model deletes, and the open
+  questions before it becomes the source of truth.
 - [`zig/README.md`](zig/README.md) — Zig build system, shared
   modules, conventions for adding a plugin.
 - [`zig/WASM.md`](zig/WASM.md) — Zig's wasm targets, feature flags,
@@ -235,19 +253,28 @@ For what each side of *this* project supports:
 ## Roadmap
 
 - Move from the hand-rolled ABI to WIT-defined Component Model
-  bindings.
-- Use [arcjet/gravity](https://github.com/arcjet/gravity) to load
-  WASI Components on wazero by transpiling them to wasip1 plugins,
-  unblocking the Component Model migration before wazero supports
-  components natively.
-- Share a single wazero runtime across all `Component` instances
-  instead of one runtime per plugin.
+  bindings. The ABI is now written down as WIT in
+  [`interface/`](interface) as a proposal; the next steps are
+  generating host bindings from it and getting one guest to run as an
+  actual component.
+- Decide which runtime carries the Component Model migration. The
+  [`go/wazy`](go/wazy/README.md) host exists because wazy supports
+  components natively; the alternative is staying on wazero and using
+  [arcjet/gravity](https://github.com/arcjet/gravity) to transpile
+  components down to wasip1 plugins.
+- Share a single runtime across all `Component` instances instead of
+  one runtime per plugin.
+- Port the ABI conformance tests from [`go/wazy`](go/wazy/README.md)
+  to the wazero host, which has none.
 
 ## Acknowledgements
 
 - [wazero](https://github.com/tetratelabs/wazero) — pure-Go wasm runtime.
+- [wazy](https://github.com/samyfodil/wazy) — wazero fork with WASI 0.2
+  and Component Model support.
 - [otelwasm](https://github.com/otelwasm/otelwasm) — prior art; the
-  config struct in `go/config.go` is borrowed from there (Apache 2.0).
+  config struct in `go/wazero/config.go` is borrowed from there
+  (Apache 2.0).
 - [zig-protobuf](https://github.com/Arwalk/zig-protobuf) — protobuf
   codegen for Zig.
 - [opentelemetry-proto](https://github.com/open-telemetry/opentelemetry-proto) —

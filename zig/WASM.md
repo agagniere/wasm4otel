@@ -3,7 +3,7 @@
 What Zig can compile to wasm, which proposals it can opt into, and
 how to express that in `build.zig`. For the master list of WASM
 proposals see [`../WASM.md`](../WASM.md); for what the host runtime
-actually accepts see [`../go/WAZERO.md`](../go/WAZERO.md).
+actually accepts see [`../go/wazero/WAZERO.md`](../go/wazero/WAZERO.md).
 
 Authoritative sources in the Zig tree:
 
