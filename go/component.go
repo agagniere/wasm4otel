@@ -622,23 +622,28 @@ func (self *Component) tracesExport() (wazero_api.Function, string) {
 // for *that* role: the operator either fixes the YAML section the
 // plugin sits in, or rebuilds the plugin with the export it needs.
 func (self *Component) ValidateLogsExport() error {
-	return self.validateSignalExport(self.logsExport, "logs")
+	fn, name := self.logsExport()
+	return self.validateSignalExport(fn, name, "logs")
 }
 
 // ValidateMetricsExport reports whether the guest can serve the
 // metrics signal in the role this component was created for.
 func (self *Component) ValidateMetricsExport() error {
-	return self.validateSignalExport(self.metricsExport, "metrics")
+	fn, name := self.metricsExport()
+	return self.validateSignalExport(fn, name, "metrics")
 }
 
 // ValidateTracesExport reports whether the guest can serve the traces
 // signal in the role this component was created for.
 func (self *Component) ValidateTracesExport() error {
-	return self.validateSignalExport(self.tracesExport, "traces")
+	fn, name := self.tracesExport()
+	return self.validateSignalExport(fn, name, "traces")
 }
 
-func (self *Component) validateSignalExport(lookup func() (wazero_api.Function, string), signal string) error {
-	fn, name := lookup()
+// validateSignalExport turns a missing batch export into the error the
+// operator sees at boot: `name` is the export their plugin lacks for
+// the role it was wired as, `signal` the pipeline section it sits in.
+func (self *Component) validateSignalExport(fn wazero_api.Function, name string, signal string) error {
 	if fn == nil {
 		return std_fmt.Errorf("wasm4otel %s: plugin does not export %s; it does not support the %s signal in this role", self.mode, name, signal)
 	}
