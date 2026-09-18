@@ -15,8 +15,10 @@ pub const std_options: std.Options = .{
 
 extern fn push_logs(ptr: [*]const u8, size: usize) i32;
 
+// The plugin's whole ABI surface, in the order the host calls it.
 comptime {
     @export(&init, .{ .name = "_start" });
+    @export(&receive, .{ .name = "wasm4otel_receive" });
 }
 
 fn init() callconv(.{ .wasm_mvp = .{} }) void {
@@ -33,7 +35,9 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
     });
 }
 
-export fn start() guest.StartResult {
+/// A receiver that pushes exactly one batch and returns, rather than
+/// looping — the host's receive goroutine simply drains once it does.
+fn receive() callconv(.{ .wasm_mvp = .{} }) guest.StartResult {
     std.log.debug("Generating and pushing 1 log", .{});
     pushOne(std.heap.wasm_allocator) catch |err| {
         std.log.err("Failed to push log: {t}", .{err});
