@@ -145,5 +145,10 @@ const freestanding_sources: []const OtelPlugin = &.{
 
 const wasip1_sources: []const OtelPlugin = &.{
     .{ .filename = "log_generator.zig", .symbols = &.{ "wasm4otel_receive", "wasm4otel_shutdown" } },
-    .{ .filename = "severity_parser.zig", .symbols = &.{"start"}, .tests = true },
+    .{ .filename = "severity_parser.zig", .symbols = &.{
+        "wasm4otel_start",
+        "wasm4otel_process_logs",
+        "wasm4otel_alloc",
+        "wasm4otel_free",
+    }, .tests = true },
 };
