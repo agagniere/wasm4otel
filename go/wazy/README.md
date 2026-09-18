@@ -6,8 +6,8 @@ The same three OpenTelemetry Collector components as
 [`go/wazero`](../wazero/README.md) — receiver, processor, exporter —
 built on [wazy](https://github.com/samyfodil/wazy) instead of
 [wazero](https://github.com/tetratelabs/wazero). Both modules speak the
-same plugin ABI — spelled out in [`AGENTS.md`](../../AGENTS.md) — so
-the same plugin runs under either without a rebuild.
+same plugin ABI, so the same plugin runs under either without a
+rebuild.
 
 The two are separate Go modules and a collector build should import
 **one** of them. Nothing shares code between them: `component.go` is
