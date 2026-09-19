@@ -225,8 +225,11 @@ dedups *components*; this would dedup *runtimes*.
 
 ### Wazero compiler mode
 
-`wazero.NewRuntimeConfigInterpreter()` → `NewRuntimeConfigCompiler()`
-for throughput. Brings platform-specific codegen into the build.
+Done, as the `engine` YAML field: `interpreter` (default), `compiler`,
+`auto`. What's left is the measurement — nothing here has been
+benchmarked, so the default is still the portable backend rather than
+the fast one. Flipping it to `auto` is a one-line change to
+`DefaultConfig` once numbers justify it.
 
 ### WASIp2 / arcjet/gravity
 
