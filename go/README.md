@@ -119,6 +119,7 @@ exporters:
 receivers:
   wasm4otel:
     path: /path/to/plugin.wasm   # required
+    engine: interpreter          # optional: interpreter | compiler | auto
     plugin_config:               # optional, free-form map
       key: value
 ```
@@ -126,6 +127,7 @@ receivers:
 | Field           | Type                     | Notes                                                                |
 | --------------- | ------------------------ | -------------------------------------------------------------------- |
 | `path`          | string (required)        | Filesystem path to the `.wasm` module. `Validate` errors if empty.   |
+| `engine`        | enum, default `interpreter` | wazero execution backend — see *Runtime configuration* below. `Validate` rejects anything else. |
 | `plugin_config` | `map[string]interface{}` | Marshalled to JSON once at load-time; the guest reads it via the `get_config` host import. |
 
 ## Lifecycle
@@ -493,11 +495,37 @@ filter and also an easy bug.
 
 ## Runtime configuration
 
-The wazero runtime is built with `NewRuntimeConfigInterpreter` — pure
-interpreter, no JIT. This trades throughput for a minimal,
-dependency-free build. Switching to `NewRuntimeConfigCompiler` would
-likely improve plugin throughput but pulls in platform-specific
-codegen.
+The `engine` field picks the wazero execution backend, per component
+instance. Both backends implement the same wasm feature set, so this
+is throughput versus portability and never changes what a plugin can
+do — a module that loads under one loads under the other.
+
+| `engine`      | wazero constructor              | Notes                                                                     |
+| ------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `interpreter` | `NewRuntimeConfigInterpreter()` | Default. Pure Go, no JIT, runs anywhere Go runs and needs no executable memory. |
+| `compiler`    | `NewRuntimeConfigCompiler()`    | Compiles to native code at load time. **Panics on platforms with no backend** — see below. |
+| `auto`        | `NewRuntimeConfig()`            | wazero probes the platform: compiler where it works, interpreter elsewhere. |
+
+The default stays `interpreter` because `compiler` is the one value
+that can take the collector down. wazero has backends for `amd64` and
+`arm64` only, and `NewRuntimeConfigCompiler` is unconditional: on
+anything else — s390x, ppc64le, riscv64 — the engine constructor hits
+`panic("unsupported architecture")` while the component is being
+created. That is a panic, not an error return, so it is not something
+`Validate` can catch from the YAML; the config is well-formed, the
+machine just can't honour it.
+
+`auto` is the portable way to ask for native speed. It runs wazero's
+own probe — the GOOS/GOARCH table *and* a live check that the kernel
+will hand out executable pages — and falls back to the interpreter
+when either fails, which also covers hardened hosts where `mmap` with
+`PROT_EXEC` is denied on a supported architecture. Use `compiler` only
+to assert a known deployment target and fail loudly if it changes.
+
+One wrinkle when reading logs: the `engine` field of the
+`Loading WebAssembly plugin` line echoes what was configured, so
+`auto` logs as `auto`. wazero exposes no accessor for the backend it
+settled on, so the resolved choice isn't reported.
 
 The module config in `LoadPlugin` sets four things:
 

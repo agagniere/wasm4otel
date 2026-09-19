@@ -19,15 +19,24 @@ wazero has two execution backends:
 
 - **Interpreter** — pure Go, runs everywhere Go runs.
 - **Compiler** — JIT-style ahead-of-time compilation to native code.
-  Available on `linux/darwin/windows` × `amd64/arm64`.
+  `arm64` on linux/darwin/freebsd/netbsd/windows; `amd64` on those
+  plus dragonfly/solaris/illumos, and only with SSE4.1.
 
-`wasm4otel` currently uses the interpreter (see
-[`go/README.md`](README.md) for the rationale and how to switch).
+`wasm4otel` exposes the choice as the `engine` YAML field —
+`interpreter` (default), `compiler`, or `auto` — see
+[`go/README.md`](README.md#runtime-configuration) for which to pick.
 Both backends implement the same feature set — including v1.12.0's new
 proposals, which have real lowerings in the compiler frontend, not
-stubs — so the choice is purely performance vs portability. As of
-v1.12.0 wazero also falls back to the interpreter automatically when
-executable `mmap` is unavailable.
+stubs — so the choice is purely performance vs portability.
+
+The fallback is worth being precise about, because it is what makes
+`auto` safe and `compiler` sharp. `NewRuntimeConfig` (our `auto`) runs
+`platform.CompilerSupports`: the table above, *and* a live probe that
+mmaps one executable page and mprotects it. Either failing selects the
+interpreter, so a hardened host that refuses `PROT_EXEC` degrades
+rather than breaks. `NewRuntimeConfigCompiler` (our `compiler`) skips
+the probe entirely and goes straight to `wazevo`, whose `newMachine()`
+is `panic("unsupported architecture")` outside amd64/arm64.
 
 ## Core feature support
 
