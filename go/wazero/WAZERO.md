@@ -7,8 +7,8 @@ platform-specific build steps, no shared library to ship.
 
 This file covers which wasm features wazero implements, and how that
 constrains the `.wasm` modules a collector can load. For the master
-list of WASM proposals see [`../WASM.md`](../WASM.md); for WASI
-revisions see [`../WASI.md`](../WASI.md).
+list of WASM proposals see [`../../WASM.md`](../../WASM.md); for WASI
+revisions see [`../../WASI.md`](../../WASI.md).
 
 Pinned version: **v1.12.0** (see `go.mod`), the latest release as of
 this writing (29 May 2026).
@@ -22,7 +22,7 @@ wazero has two execution backends:
   Available on `linux/darwin/windows` × `amd64/arm64`.
 
 `wasm4otel` currently uses the interpreter (see
-[`go/README.md`](README.md) for the rationale and how to switch).
+[`go/wazero/README.md`](README.md) for the rationale and how to switch).
 Both backends implement the same feature set — including v1.12.0's new
 proposals, which have real lowerings in the compiler frontend, not
 stubs — so the choice is purely performance vs portability. As of
@@ -78,7 +78,7 @@ entire **component model**.
 Also unsupported, and worth naming because Zig *can* emit it: `fp16`.
 Wasmtime doesn't implement it either — it's only phase 2 — so this one
 isn't a wazero gap so much as a way to build a module no host will
-run. See [`../zig/WASM.md`](../zig/WASM.md).
+run. See [`../../zig/WASM.md`](../../zig/WASM.md).
 
 `branch-hinting` is a special case: it rides in a custom section, and
 wazero skips custom sections it doesn't recognize (it only

@@ -1,4 +1,4 @@
-module github.com/agagniere/wasm4otel/go
+module github.com/agagniere/wasm4otel/go/wazero
 
 go 1.26
 
