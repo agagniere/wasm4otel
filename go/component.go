@@ -235,11 +235,12 @@ func NewComponent(
 			return nil, std_fmt.Errorf("wasm4otel %s: marshal plugin_config: %w", mode, err)
 		}
 	}
-	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path)
+	config.Engine = config.Engine.orDefault()
+	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path, "engine", config.Engine)
 	// Detach from the framework's create-phase ctx — the component
 	// owns its own cancellation, ended only by Shutdown via `cancel`.
 	context, cancel := std_context.WithCancel(std_context.Background())
-	runtime := newRuntime(context)
+	runtime := newRuntime(context, config.Engine)
 	return &Component{
 		mode:             mode,
 		logger:           hostLogger,
@@ -251,10 +252,27 @@ func NewComponent(
 	}, nil
 }
 
-func newRuntime(context std_context.Context) wazero.Runtime {
-	runtime := wazero.NewRuntimeWithConfig(context, wazero.NewRuntimeConfigInterpreter())
+func newRuntime(context std_context.Context, engine Engine) wazero.Runtime {
+	runtime := wazero.NewRuntimeWithConfig(context, engine.runtimeConfig())
 	wasi_snapshot_preview1.MustInstantiate(context, runtime)
 	return runtime
+}
+
+// runtimeConfig maps the configured engine onto wazero's runtime
+// constructors. EngineAuto defers to wazero's own probe — does this
+// GOOS/GOARCH have a backend, and will the kernel hand out executable
+// pages — while EngineCompiler is unconditional: on a platform with
+// no backend it panics inside wazero, which is why the YAML default
+// is the interpreter and not the faster choice.
+func (engine Engine) runtimeConfig() wazero.RuntimeConfig {
+	switch engine {
+	case EngineCompiler:
+		return wazero.NewRuntimeConfigCompiler()
+	case EngineAuto:
+		return wazero.NewRuntimeConfig()
+	default:
+		return wazero.NewRuntimeConfigInterpreter()
+	}
 }
 
 // Provide a callback accessible from the guest to log

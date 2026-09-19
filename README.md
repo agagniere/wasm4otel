@@ -234,7 +234,9 @@ For what each side of *this* project supports:
   WASI Components on wazero by transpiling them to wasip1 plugins,
   unblocking the Component Model migration before wazero supports
   components natively.
-- Switch wazero from interpreter mode to the optimizing compiler.
+- Benchmark the wazero backends and, if the compiler wins by enough,
+  make `engine: auto` the default instead of `interpreter`. The knob
+  itself already exists.
 - Share a single wazero runtime across all `Component` instances
   instead of one runtime per plugin.
 
