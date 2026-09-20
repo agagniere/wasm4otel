@@ -69,11 +69,11 @@ From the shared `wasm4otel` package:
   receiver mode plus the obsreport that brackets the guest's pushes,
   which needs the full `receiver.Settings` rather than just the
   logger. The receiver factory's three `createX` call this.
-- `Component` — the host-side type each factory builds and returns;
-  satisfies `receiver.{Logs,Metrics,Traces}`,
-  `processor.{Logs,Metrics,Traces}`, and
-  `exporter.{Logs,Metrics,Traces}` depending on the `ComponentMode`
-  passed to `Load` / `NewComponent`.
+- `Component` — the host-side type every factory builds. The receiver
+  factory returns it as-is, so it satisfies
+  `receiver.{Logs,Metrics,Traces}` directly; the processor and
+  exporter factories hand its methods to their helper and return the
+  wrapper instead, which is what the pipeline actually holds.
 - `ComponentMode` — `ModeReceiver` / `ModeProcessor` / `ModeExporter`.
   Implements `fmt.Stringer` for use in error messages.
 
@@ -201,10 +201,13 @@ Note the ordering: `wasm4otel_setup` runs inside `Load`, which is
 *before* the per-signal check in `createX`. A plugin's setup hook can
 therefore run even when the signal wiring is about to be rejected.
 
-After that, the framework calls `Start`/`Shutdown` and, for processor
-and exporter, `Capabilities` plus the per-batch entry point — a
-processor's is `Process<Signal>`, an exporter's `Consume<Signal>`.
-Their behavior branches on `mode`:
+After that, a receiver's `Start`/`Shutdown` are called by the
+framework directly. A processor's and an exporter's go to their helper
+as options, and the helper calls them, along with the per-batch entry
+point it was handed — `Process<Signal>` for a processor,
+`Consume<Signal>` for an exporter. `Capabilities` is passed to both
+helpers rather than called on the `Component`, since the pipeline
+holds the wrapper. The methods themselves branch on `mode`:
 
 | Method          | `ModeReceiver`                                                                                                                                        | `ModeProcessor` / `ModeExporter`                                                                                            |
 |-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
@@ -267,8 +270,29 @@ plugin's own number. A batch the plugin filters away entirely becomes
 `processorhelper.ErrSkipProcessingData` — counted as zero outgoing
 items, with no error travelling back up the pipeline.
 
-Exporter mode is not wrapped yet, so it emits no
-`otelcol_exporter_*` metrics.
+Exporter mode is wrapped in `exporterhelper`, which completes the set:
+
+| Metric                                              | Covers                                           |
+| --------------------------------------------------- | ------------------------------------------------ |
+| `otelcol_exporter_sent_{log_records,metric_points,spans}` | Items the guest accepted.                  |
+| `otelcol_exporter_send_failed_*`                     | Items lost to a failed `wasm4otel_export_<sig>`. |
+| `otelcol_exporter_in_flight_requests`                | Calls currently inside the guest.                |
+
+Each call also gets an `exporter/<id>/<signal>` span, nested under
+whatever the receiver opened.
+
+Two of exporterhelper's features are deliberately left off. The
+**timeout** is set to zero rather than left at its five-second
+default, because a deadline nobody checks is worse than none:
+`timeoutSender` only derives a context with a deadline, and wazero
+never looks at it — honouring it would mean building the runtime with
+`WithCloseOnContextDone(true)`, which needs an answer for the poisoned
+instance that leaves behind. **Queue and retry** stay off because
+turning them on means deciding which guest return codes are worth
+retrying, and the batch export ABI has a single non-zero code covering
+everything from "the remote is down" to "this payload will never
+parse". Both are a config surface away once those questions have
+answers.
 
 ## ABI strings used in this code
 
@@ -655,10 +679,16 @@ Pinned in `go.mod`:
   the push happens inside a host function; it stays out of the public
   API, though — the field is unexported and `LoadReceiver` takes only
   v1 types.
+- `go.opentelemetry.io/collector/exporter/exporterhelper` — wraps the
+  exporter factory. It is by far the heaviest of the three, dragging
+  in `confmap` and the koanf stack, `client`, `extension`,
+  `configretry` and `configoptional` — 27 modules against
+  receiverhelper's 6. None of that is new weight in a real
+  distribution, where an OTLP exporter has already pulled all of it.
 - `go.uber.org/zap` — collector logger.
 
-Both helpers sit outside the collector's stable v1 set, so they are the
-two pins to re-check on a collector bump; everything else is v1.
+All three helpers sit outside the collector's stable v1 set, so they
+are the pins to re-check on a collector bump; everything else is v1.
 
 ## Building and testing
 
