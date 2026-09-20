@@ -113,9 +113,21 @@ type Component struct {
 	alloc wazero_api.Function
 	free  wazero_api.Function
 
+	// Set by the factory in receiver and exporter mode. In processor
+	// mode they stay nil: processorhelper owns the next consumer, so
+	// the guest's push lands in the capture below instead.
 	NextConsumerLogs    otel_consumer.Logs
 	NextConsumerMetrics otel_consumer.Metrics
 	NextConsumerTraces  otel_consumer.Traces
+
+	// Processor mode turns push_<signal> from a forward into this
+	// call's return channel. Exactly one is non-nil, and only while
+	// the matching Process<Signal> holds callMu — so a push for the
+	// wrong signal, or one made outside a process call, still finds a
+	// dead-end and is told so.
+	captureLogs    *otel_logs.Logs
+	captureMetrics *otel_metrics.Metrics
+	captureTraces  *otel_traces.Traces
 
 	receiveWg std_sync.WaitGroup
 
@@ -336,6 +348,17 @@ func (self *Component) outboundLogs(
 		self.guestLogger.Errorw("Unable to deserialize logs", "size", size, "error", err)
 		return 2
 	}
+	if self.mode == ModeProcessor {
+		// The guest may push more than once per batch; each push
+		// appends, and the whole lot becomes the process call's result.
+		if self.captureLogs == nil {
+			self.guestLogger.Error("Plugin is pushing logs to a dead-end")
+			return 3
+		}
+		logs.ResourceLogs().MoveAndAppendTo(self.captureLogs.ResourceLogs())
+		self.guestLogger.Infow("OK", "bytes", size)
+		return 0
+	}
 	if self.NextConsumerLogs == nil {
 		self.guestLogger.Error("Plugin is pushing logs to a dead-end")
 		return 3
@@ -365,6 +388,17 @@ func (self *Component) outboundMetrics(
 		self.guestLogger.Errorw("Unable to deserialize metrics", "size", size, "error", err)
 		return 2
 	}
+	if self.mode == ModeProcessor {
+		// The guest may push more than once per batch; each push
+		// appends, and the whole lot becomes the process call's result.
+		if self.captureMetrics == nil {
+			self.guestLogger.Error("Plugin is pushing metrics to a dead-end")
+			return 3
+		}
+		metrics.ResourceMetrics().MoveAndAppendTo(self.captureMetrics.ResourceMetrics())
+		self.guestLogger.Infow("OK", "bytes", size)
+		return 0
+	}
 	if self.NextConsumerMetrics == nil {
 		self.guestLogger.Error("Plugin is pushing metrics to a dead-end")
 		return 3
@@ -393,6 +427,17 @@ func (self *Component) outboundTraces(
 	if err != nil {
 		self.guestLogger.Errorw("Unable to deserialize traces", "size", size, "error", err)
 		return 2
+	}
+	if self.mode == ModeProcessor {
+		// The guest may push more than once per batch; each push
+		// appends, and the whole lot becomes the process call's result.
+		if self.captureTraces == nil {
+			self.guestLogger.Error("Plugin is pushing traces to a dead-end")
+			return 3
+		}
+		traces.ResourceSpans().MoveAndAppendTo(self.captureTraces.ResourceSpans())
+		self.guestLogger.Infow("OK", "bytes", size)
+		return 0
 	}
 	if self.NextConsumerTraces == nil {
 		self.guestLogger.Error("Plugin is pushing traces to a dead-end")
@@ -677,12 +722,11 @@ func (self *Component) Capabilities() otel_consumer.Capabilities {
 }
 
 // ConsumeLogs marshals the batch to OTLP bytes and hands them to the
-// guest via the alloc → write → batch export → free sequence, all under
-// callMu. Which export that is depends on the mode: a processor gets
-// wasm4otel_process_logs and forwards its transformed batch through the
-// push_logs host import — that path uses NextConsumerLogs, not the
-// return path — while an exporter gets wasm4otel_export_logs and is
-// terminal.
+// guest via the alloc → write → batch export → free sequence, all
+// under callMu. This is the exporter-mode entry point, calling the
+// terminal wasm4otel_export_logs; processor mode goes through
+// ProcessLogs instead, so that processorhelper can time the guest and
+// own the hand-off downstream.
 func (self *Component) ConsumeLogs(ctx std_context.Context, logs otel_logs.Logs) error {
 	payload, err := (&otel_logs.ProtoMarshaler{}).MarshalLogs(logs)
 	if err != nil {
@@ -712,11 +756,134 @@ func (self *Component) ConsumeTraces(ctx std_context.Context, traces otel_traces
 	return self.deliver(ctx, fn, payload, export)
 }
 
+// ErrNoOutput reports that the guest accepted a batch and pushed
+// nothing back: wasm4otel_process_<signal> returned success without a
+// single push_<signal>, which reads as "everything was filtered out".
+// The processor factory maps it to processorhelper's
+// ErrSkipProcessingData, which ends the batch without faulting the
+// pipeline. It is kept local so the shared package depends only on
+// the collector's stable v1 modules.
+var ErrNoOutput = std_errors.New("wasm4otel: plugin pushed nothing for this batch")
+
+// ProcessLogs is the processor-mode entry point, shaped to
+// processorhelper.ProcessLogsFunc: transform the batch and *return*
+// it rather than handing it downstream ourselves. That shape is what
+// makes the timing meaningful. The guest still forwards by calling
+// push_logs, but for the span of this call push_logs appends to the
+// batch below instead of reaching the next consumer — so the duration
+// processorhelper records around us covers the wasm hop and the
+// plugin's own work, and stops before the rest of the pipeline.
+//
+// Returns ErrNoOutput when the guest pushed nothing at all.
+func (self *Component) ProcessLogs(ctx std_context.Context, logs otel_logs.Logs) (otel_logs.Logs, error) {
+	out := otel_logs.NewLogs()
+	payload, err := (&otel_logs.ProtoMarshaler{}).MarshalLogs(logs)
+	if err != nil {
+		return out, std_fmt.Errorf("marshal logs: %w", err)
+	}
+	if len(payload) == 0 {
+		return out, ErrNoOutput
+	}
+	fn, export := self.logsExport()
+
+	// Teardown is deferred ahead of the install so the capture can
+	// never outlive the call that owns it, and it is torn down while
+	// callMu is still held.
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	defer func() { self.captureLogs = nil }()
+	self.captureLogs = &out
+
+	if err := self.deliverLocked(ctx, fn, payload, export); err != nil {
+		return out, err
+	}
+	if out.ResourceLogs().Len() == 0 {
+		return out, ErrNoOutput
+	}
+	return out, nil
+}
+
+// ProcessMetrics: same shape as ProcessLogs for the metrics signal.
+func (self *Component) ProcessMetrics(ctx std_context.Context, metrics otel_metrics.Metrics) (otel_metrics.Metrics, error) {
+	out := otel_metrics.NewMetrics()
+	payload, err := (&otel_metrics.ProtoMarshaler{}).MarshalMetrics(metrics)
+	if err != nil {
+		return out, std_fmt.Errorf("marshal metrics: %w", err)
+	}
+	if len(payload) == 0 {
+		return out, ErrNoOutput
+	}
+	fn, export := self.metricsExport()
+
+	// Teardown is deferred ahead of the install so the capture can
+	// never outlive the call that owns it, and it is torn down while
+	// callMu is still held.
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	defer func() { self.captureMetrics = nil }()
+	self.captureMetrics = &out
+
+	if err := self.deliverLocked(ctx, fn, payload, export); err != nil {
+		return out, err
+	}
+	if out.ResourceMetrics().Len() == 0 {
+		return out, ErrNoOutput
+	}
+	return out, nil
+}
+
+// ProcessTraces: same shape as ProcessLogs for the traces signal.
+func (self *Component) ProcessTraces(ctx std_context.Context, traces otel_traces.Traces) (otel_traces.Traces, error) {
+	out := otel_traces.NewTraces()
+	payload, err := (&otel_traces.ProtoMarshaler{}).MarshalTraces(traces)
+	if err != nil {
+		return out, std_fmt.Errorf("marshal traces: %w", err)
+	}
+	if len(payload) == 0 {
+		return out, ErrNoOutput
+	}
+	fn, export := self.tracesExport()
+
+	// Teardown is deferred ahead of the install so the capture can
+	// never outlive the call that owns it, and it is torn down while
+	// callMu is still held.
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	defer func() { self.captureTraces = nil }()
+	self.captureTraces = &out
+
+	if err := self.deliverLocked(ctx, fn, payload, export); err != nil {
+		return out, err
+	}
+	if out.ResourceSpans().Len() == 0 {
+		return out, ErrNoOutput
+	}
+	return out, nil
+}
+
 // deliver runs the per-batch alloc → write → call → free dance and
 // turns the guest's return code into a Go error. Shared by every
 // ConsumeX so the marshal step is the only signal-specific code.
+//
+// An empty batch is answered here rather than in the guest, and the
+// answer differs by role — nothing to export is success, whereas
+// nothing to process is ErrNoOutput — which is why each entry point
+// decides it before taking callMu.
 func (self *Component) deliver(ctx std_context.Context, fn wazero_api.Function, payload []byte, export string) error {
-	rc, err := self.callConsume(ctx, fn, payload)
+	if len(payload) == 0 {
+		return nil
+	}
+	self.callMu.Lock()
+	defer self.callMu.Unlock()
+	return self.deliverLocked(ctx, fn, payload, export)
+}
+
+// deliverLocked is deliver's body, minus the locking. Callers must
+// already hold callMu — Process<Signal> does, because the capture
+// slot it installs has to stay installed for exactly the span of the
+// guest call and no longer.
+func (self *Component) deliverLocked(ctx std_context.Context, fn wazero_api.Function, payload []byte, export string) error {
+	rc, err := self.callConsumeLocked(ctx, fn, payload)
 	if err != nil {
 		self.guestLogger.Errorw(export+" failed", "error", err, "bytes", len(payload))
 		return err
@@ -728,23 +895,19 @@ func (self *Component) deliver(ctx std_context.Context, fn wazero_api.Function, 
 	return nil
 }
 
-// callConsume runs the per-batch sequence: alloc a guest-side buffer,
-// write the payload into it, invoke the role's batch export, free the
-// buffer. Holds callMu for the whole sequence — wazero modules are
-// single-occupant and a partial sequence must not race with anything
-// else entering the instance.
-func (self *Component) callConsume(
+// callConsumeLocked runs the per-batch sequence: alloc a guest-side
+// buffer, write the payload into it, invoke the role's batch export,
+// free the buffer. The caller must hold callMu for the whole sequence
+// — wazero modules are single-occupant and a partial sequence must
+// not race with anything else entering the instance — and must have
+// already rejected an empty payload.
+func (self *Component) callConsumeLocked(
 	ctx std_context.Context,
 	fn wazero_api.Function,
 	payload []byte,
 ) (uint32, error) {
 	size := uint64(len(payload))
-	if size == 0 {
-		return 0, nil
-	}
 
-	self.callMu.Lock()
-	defer self.callMu.Unlock()
 	if self.broken {
 		return 0, std_errors.New("wasm4otel: component is poisoned (prior trap)")
 	}

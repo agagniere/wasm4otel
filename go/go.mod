@@ -11,6 +11,7 @@ require (
 	go.opentelemetry.io/collector/exporter v1.65.0
 	go.opentelemetry.io/collector/pdata v1.65.0
 	go.opentelemetry.io/collector/processor v1.65.0
+	go.opentelemetry.io/collector/processor/processorhelper v0.159.0
 	go.opentelemetry.io/collector/receiver v1.65.0
 	go.uber.org/zap v1.28.0
 )

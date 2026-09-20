@@ -64,6 +64,12 @@ call to **push** telemetry into the next consumer:
 | `interruptible_sleep_ms` | Sleep at most N ms; returns non-zero when the component is shutting down. |
 | `get_config`             | Fetch the YAML `plugin_config` as a JSON document.                        |
 
+In processor mode the three `push_*` imports don't reach the next
+consumer directly: the host collects whatever the guest pushes during
+`wasm4otel_process_<signal>` and forwards it once the call returns, so
+the collector can time the plugin without also timing the rest of the
+pipeline.
+
 And it looks up a symmetric set of exports the host can call to
 **deliver** telemetry the plugin should consume. These are role-typed
 as well as signal-typed — a processor exports
