@@ -16,6 +16,11 @@ import (
 // imports. Receivers are signal-agnostic at the entry point — one loop
 // serves whichever signals the plugin pushes — so all three createX
 // hooks require the same single export.
+//
+// LoadReceiver also attaches receiverhelper's ObsReport, which is what
+// puts this component on otelcol_receiver_{accepted,refused,failed}_*
+// and starts the span every downstream helper hangs its own
+// instrumentation off — see Component.pushLogs.
 func NewFactory() otel_receiver.Factory {
 	return otel_receiver.NewFactory(
 		otel_component.MustNewType("wasm4otel"),
@@ -32,7 +37,7 @@ func createLogs(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Logs,
 ) (otel_receiver.Logs, error) {
-	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeReceiver)
+	component, err := wasm4otel.LoadReceiver(anyconfig, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +51,7 @@ func createMetrics(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Metrics,
 ) (otel_receiver.Metrics, error) {
-	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeReceiver)
+	component, err := wasm4otel.LoadReceiver(anyconfig, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +65,7 @@ func createTraces(
 	anyconfig otel_component.Config,
 	nextConsumer otel_consumer.Traces,
 ) (otel_receiver.Traces, error) {
-	component, err := wasm4otel.Load(anyconfig, settings.Logger, wasm4otel.ModeReceiver)
+	component, err := wasm4otel.LoadReceiver(anyconfig, settings)
 	if err != nil {
 		return nil, err
 	}

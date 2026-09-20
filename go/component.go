@@ -18,6 +18,8 @@ import (
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_logs "go.opentelemetry.io/collector/pdata/plog"
 	otel_metrics "go.opentelemetry.io/collector/pdata/pmetric"
+	otel_receiver "go.opentelemetry.io/collector/receiver"
+	otel_receiverhelper "go.opentelemetry.io/collector/receiver/receiverhelper"
 	otel_traces "go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/tetratelabs/wazero"
@@ -79,6 +81,15 @@ const (
 	StartFailure uint32 = 1
 )
 
+// Attributes the obsreport stamps on the receiver's metrics and spans.
+// Transport is what the batch travelled over to reach the host — a
+// wasm call rather than a socket — and format is how it was encoded,
+// which coming out of the guest is always OTLP protobuf.
+const (
+	obsTransport = "wasm"
+	obsFormat    = "protobuf"
+)
+
 type Component struct {
 	mode ComponentMode
 
@@ -113,9 +124,18 @@ type Component struct {
 	alloc wazero_api.Function
 	free  wazero_api.Function
 
-	// Set by the factory in receiver and exporter mode. In processor
-	// mode they stay nil: processorhelper owns the next consumer, so
-	// the guest's push lands in the capture below instead.
+	// Set by LoadReceiver: the collector's own accounting for what a
+	// receiver hands the pipeline. It is wired at the same moment as
+	// the next consumers below and stays nil whenever they do, so the
+	// push helpers can take a non-nil consumer as proof of a non-nil
+	// obsReport.
+	obsReport *otel_receiverhelper.ObsReport
+
+	// Set by the factory in receiver mode. Processor mode leaves them
+	// nil because processorhelper owns the next consumer, so the
+	// guest's push lands in the capture below instead; exporter mode
+	// leaves them nil because the guest is terminal there and has
+	// nowhere to push to at all.
 	NextConsumerLogs    otel_consumer.Logs
 	NextConsumerMetrics otel_consumer.Metrics
 	NextConsumerTraces  otel_consumer.Traces
@@ -168,6 +188,35 @@ func Load(
 		return nil, err
 	}
 	if err = component.runSetup(); err != nil {
+		return nil, err
+	}
+	return component, nil
+}
+
+// LoadReceiver is Load plus the one piece of wiring only a receiver
+// needs: an obsreport built from the collector's settings for this
+// component. Receivers are the single role that pushes on its own
+// initiative, which is also why they are the single role whose
+// instrumentation has to live inside the Component — processor and
+// exporter mode are wrapped from the outside by their own helper,
+// which never sees the guest's push.
+//
+// LongLivedCtx describes us exactly: wasm4otel_receive is handed one
+// context for the component's whole lifetime and pushes many batches
+// through it. Declaring that keeps each batch's span rooted and
+// finite, rather than parented to a loop that only ends at shutdown.
+func LoadReceiver(anyconfig otel_component.Config, settings otel_receiver.Settings) (*Component, error) {
+	component, err := Load(anyconfig, settings.Logger, ModeReceiver)
+	if err != nil {
+		return nil, err
+	}
+	component.obsReport, err = otel_receiverhelper.NewObsReport(otel_receiverhelper.ObsReportSettings{
+		ReceiverID:             settings.ID,
+		Transport:              obsTransport,
+		LongLivedCtx:           true,
+		ReceiverCreateSettings: settings,
+	})
+	if err != nil {
 		return nil, err
 	}
 	return component, nil
@@ -331,6 +380,38 @@ func (self *Component) getConfig(_ std_context.Context, module wazero_api.Module
 	return total
 }
 
+// pushLogs hands the guest's batch to the next consumer, bracketed by
+// the obsreport so the collector counts the records and opens a span
+// for the batch. That span matters beyond this component: StartLogsOp
+// is the only tracer.Start on any of our three paths, and the helpers
+// downstream assume someone upstream made one — processorhelper only
+// annotates the span it finds in the context, exporterhelper only
+// nests under it. Without this bracket a pipeline entered here carries
+// no trace at all.
+func (self *Component) pushLogs(logs otel_logs.Logs) error {
+	ctx := self.obsReport.StartLogsOp(self.context)
+	err := self.NextConsumerLogs.ConsumeLogs(ctx, logs)
+	self.obsReport.EndLogsOp(ctx, obsFormat, logs.LogRecordCount(), err)
+	return err
+}
+
+// pushMetrics is pushLogs for metrics; the count the obsreport wants
+// is data points, not metrics.
+func (self *Component) pushMetrics(metrics otel_metrics.Metrics) error {
+	ctx := self.obsReport.StartMetricsOp(self.context)
+	err := self.NextConsumerMetrics.ConsumeMetrics(ctx, metrics)
+	self.obsReport.EndMetricsOp(ctx, obsFormat, metrics.DataPointCount(), err)
+	return err
+}
+
+// pushTraces is pushLogs for traces, counted in spans.
+func (self *Component) pushTraces(traces otel_traces.Traces) error {
+	ctx := self.obsReport.StartTracesOp(self.context)
+	err := self.NextConsumerTraces.ConsumeTraces(ctx, traces)
+	self.obsReport.EndTracesOp(ctx, obsFormat, traces.SpanCount(), err)
+	return err
+}
+
 func (self *Component) outboundLogs(
 	_ std_context.Context,
 	module wazero_api.Module,
@@ -363,7 +444,7 @@ func (self *Component) outboundLogs(
 		self.guestLogger.Error("Plugin is pushing logs to a dead-end")
 		return 3
 	}
-	if err := self.NextConsumerLogs.ConsumeLogs(self.context, logs); err != nil {
+	if err := self.pushLogs(logs); err != nil {
 		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
 		return 4
 	}
@@ -403,7 +484,7 @@ func (self *Component) outboundMetrics(
 		self.guestLogger.Error("Plugin is pushing metrics to a dead-end")
 		return 3
 	}
-	if err := self.NextConsumerMetrics.ConsumeMetrics(self.context, metrics); err != nil {
+	if err := self.pushMetrics(metrics); err != nil {
 		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
 		return 4
 	}
@@ -443,7 +524,7 @@ func (self *Component) outboundTraces(
 		self.guestLogger.Error("Plugin is pushing traces to a dead-end")
 		return 3
 	}
-	if err := self.NextConsumerTraces.ConsumeTraces(self.context, traces); err != nil {
+	if err := self.pushTraces(traces); err != nil {
 		self.guestLogger.Errorw("Downstream consumer rejected batch", "size", size, "error", err)
 		return 4
 	}

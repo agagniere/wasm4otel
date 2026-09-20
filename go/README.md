@@ -63,7 +63,12 @@ From the shared `wasm4otel` package:
   loads the plugin, verifies the mode-mandatory exports
   (`wasm4otel_receive` for receivers; `wasm4otel_alloc` /
   `wasm4otel_free` for processor/exporter), then runs the guest's
-  `wasm4otel_setup` hook. Each role's per-signal `createX` calls this.
+  `wasm4otel_setup` hook. The processor and exporter factories call
+  this directly.
+- `LoadReceiver(cfg, settings) (*Component, error)` — `Load` in
+  receiver mode plus the obsreport that brackets the guest's pushes,
+  which needs the full `receiver.Settings` rather than just the
+  logger. The receiver factory's three `createX` call this.
 - `Component` — the host-side type each factory builds and returns;
   satisfies `receiver.{Logs,Metrics,Traces}`,
   `processor.{Logs,Metrics,Traces}`, and
@@ -134,7 +139,8 @@ receivers:
 ## Lifecycle
 
 Every role's per-signal `createX` calls
-`wasm4otel.Load(cfg, logger, mode)`, which runs the
+`wasm4otel.Load(cfg, logger, mode)` — receivers through
+`LoadReceiver`, which adds the obsreport on top — and that runs the
 signal-independent setup steps:
 
 1. `NewComponent` — validates config, derives a cancellable context
@@ -216,6 +222,34 @@ its own instance.
 
 ## Internal telemetry
 
+Receiver mode carries a `receiverhelper.ObsReport`, built by
+`LoadReceiver` and wrapped around each `push_<signal>` the guest makes,
+so a wasm4otel receiver reports the same counters as any built-in one:
+
+| Metric                                                   | Covers                                              |
+| -------------------------------------------------------- | --------------------------------------------------- |
+| `otelcol_receiver_accepted_{log_records,metric_points,spans}` | Items the next consumer took.                  |
+| `otelcol_receiver_refused_*`                              | Items the next consumer rejected.                   |
+| `otelcol_receiver_failed_*`                               | Items lost to an error of our own.                  |
+| `otelcol_receiver_requests{outcome}`                      | One per `push_<signal>`, behind a feature gate.     |
+
+All of them carry `transport="wasm"`, and the spans carry
+`format="protobuf"` — what the batch travelled over, and how it was
+encoded on the way out of the guest. The refused/failed split needs the
+`receiverhelper.newReceiverMetrics` feature gate; with it off every
+error counts as refused.
+
+The obsreport also does something no metric name advertises: its
+`StartLogsOp` is the only `tracer.Start` on any wasm4otel path, so it
+is what gives a pipeline entered here a span at all. `processorhelper`
+only annotates the span it finds in the context and `exporterhelper`
+only nests under it — before this, a pipeline fed by a wasm4otel
+receiver produced no internal trace, because nobody had opened one.
+`LongLivedCtx` is set, which is the `wasm4otel_receive` situation
+exactly: one context for the component's lifetime, many batches
+through it, each wanting its own finite span rather than a child of a
+parent that ends at shutdown.
+
 Processor mode is wrapped in `processorhelper`, which puts a wasm4otel
 processor on the same metrics as any built-in one:
 
@@ -233,8 +267,8 @@ plugin's own number. A batch the plugin filters away entirely becomes
 `processorhelper.ErrSkipProcessingData` — counted as zero outgoing
 items, with no error travelling back up the pipeline.
 
-Receiver and exporter mode are not wrapped yet, so they emit no
-`otelcol_{receiver,exporter}_*` metrics.
+Exporter mode is not wrapped yet, so it emits no
+`otelcol_exporter_*` metrics.
 
 ## ABI strings used in this code
 
@@ -611,11 +645,20 @@ Pinned in `go.mod`:
   collector framework. The three `pdata/p{log,metric,trace}.{ProtoMarshaler,ProtoUnmarshaler}`
   encode and decode the bytes that cross the host/guest boundary.
 - `go.opentelemetry.io/collector/processor/processorhelper` — wraps
-  the processor factory for the metrics above. It is the one module
-  here outside the collector's stable v1 set, which is why
-  `ErrNoOutput` is declared in the shared package and translated in
-  `go/processor`, rather than the shared package importing it.
+  the processor factory for the metrics above. `ErrNoOutput` is
+  declared in the shared package and translated into
+  `ErrSkipProcessingData` in `go/processor`, so no v0 sentinel value
+  leaks into the shared package's behaviour.
+- `go.opentelemetry.io/collector/receiver/receiverhelper` — the
+  obsreport the receiver's push path is bracketed with. Unlike
+  processorhelper this one is imported by the shared package, because
+  the push happens inside a host function; it stays out of the public
+  API, though — the field is unexported and `LoadReceiver` takes only
+  v1 types.
 - `go.uber.org/zap` — collector logger.
+
+Both helpers sit outside the collector's stable v1 set, so they are the
+two pins to re-check on a collector bump; everything else is v1.
 
 ## Building and testing
 
