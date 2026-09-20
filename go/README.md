@@ -186,22 +186,26 @@ The role package then:
   signal-agnostic at the entry point, since one `wasm4otel_receive`
   loop calls whichever `push_<signal>` it needs.
 - Stores the downstream consumer in
-  `component.NextConsumer{Logs,Metrics,Traces}` (receiver and
-  processor only — the exporter is terminal).
+  `component.NextConsumer{Logs,Metrics,Traces}` — receiver mode only.
+  An exporter is terminal, and a processor's next consumer belongs to
+  `processorhelper`, which hands the batch on once `Process<Signal>`
+  has returned.
 
 Note the ordering: `wasm4otel_setup` runs inside `Load`, which is
 *before* the per-signal check in `createX`. A plugin's setup hook can
 therefore run even when the signal wiring is about to be rejected.
 
-After that, the framework calls `Start`/`Shutdown` and (for processor
-and exporter) `Consume<Signal>`/`Capabilities`. Their behavior
-branches on `mode`:
+After that, the framework calls `Start`/`Shutdown` and, for processor
+and exporter, `Capabilities` plus the per-batch entry point — a
+processor's is `Process<Signal>`, an exporter's `Consume<Signal>`.
+Their behavior branches on `mode`:
 
 | Method          | `ModeReceiver`                                                                                                                                        | `ModeProcessor` / `ModeExporter`                                                                                            |
 |-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
 | `Start`         | Calls `wasm4otel_start()` synchronously under `callMu`, then spawns a goroutine running `wasm4otel_receive()` and returns. That goroutine owns the instance until shutdown. | Calls `wasm4otel_start()` synchronously under `callMu`. Must return promptly. No goroutine.                                 |
 | `Shutdown`      | Cancels the context (so any blocking host import unwinds), waits for the receive goroutine, then calls `wasm4otel_shutdown()`.                         | Cancels the context, calls `wasm4otel_shutdown()`. The `Wait` is a no-op — no goroutine to join.                            |
-| `Consume<Sig>`  | Not called.                                                                                                                                           | Marshals the batch and runs the `wasm4otel_alloc → write → wasm4otel_{process,export}_<sig> → wasm4otel_free` dance.        |
+| `Consume<Sig>`  | Not called.                                                                                                                                           | **Exporter only.** Marshals the batch and runs the `wasm4otel_alloc → write → wasm4otel_export_<sig> → wasm4otel_free` dance. |
+| `Process<Sig>`  | Not called.                                                                                                                                           | **Processor only.** The same dance against `wasm4otel_process_<sig>`, except `push_<sig>` appends to a capture instead of reaching the next consumer; the accumulated batch is the return value, or `ErrNoOutput` if the guest pushed nothing. |
 
 `wasm4otel_start` means the same thing in every mode — short-lived
 init, must return promptly — which is why the long-running loop got
@@ -209,6 +213,28 @@ its own name. Only a receiver-mode `Component` runs the loop, even
 when a multi-role plugin exports it: a processor has no business also
 generating telemetry, and each YAML section the plugin appears in gets
 its own instance.
+
+## Internal telemetry
+
+Processor mode is wrapped in `processorhelper`, which puts a wasm4otel
+processor on the same metrics as any built-in one:
+
+| Metric                                | Covers                                               |
+| ------------------------------------- | ---------------------------------------------------- |
+| `otelcol_processor_internal_duration` | The `Process<Signal>` call — marshal, wasm, capture. |
+| `otelcol_processor_incoming_items`    | Records handed to the plugin.                        |
+| `otelcol_processor_outgoing_items`    | Records the plugin pushed back.                      |
+
+The duration stops before the next consumer runs, which is the whole
+reason push is captured rather than forwarded: were the guest to call
+downstream itself, every exporter's latency would land inside the
+plugin's own number. A batch the plugin filters away entirely becomes
+`ErrNoOutput`, which the factory maps to
+`processorhelper.ErrSkipProcessingData` — counted as zero outgoing
+items, with no error travelling back up the pipeline.
+
+Receiver and exporter mode are not wrapped yet, so they emit no
+`otelcol_{receiver,exporter}_*` metrics.
 
 ## ABI strings used in this code
 
@@ -299,16 +325,24 @@ value — `-1` for debug, `0` info, `1` warn, `2` error, etc.
 ### `push_logs(ptr: i32, size: i32) -> i32`<br>`push_metrics(ptr: i32, size: i32) -> i32`<br>`push_traces(ptr: i32, size: i32) -> i32`
 
 Each reads an OTLP-encoded `LogsData` / `MetricsData` / `TracesData`
-protobuf from the guest's memory and calls the matching downstream
-`Consume<Signal>`. Return codes (uniform across the three):
+protobuf from the guest's memory and, outside processor mode, calls
+the matching downstream `Consume<Signal>`. Return codes (uniform
+across the three):
 
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
 | 0    | Success.                                                      |
 | 1    | Could not read `(ptr, size)` from the guest's memory.         |
 | 2    | The matching `ProtoUnmarshaler` failed to decode the payload. |
-| 3    | No downstream consumer is wired (plugin pushing to dead-end). |
+| 3    | Nowhere to put the batch (plugin pushing to a dead-end).      |
 | 4    | Downstream `Consume<Signal>` returned an error.               |
+
+In processor mode the push never reaches the next consumer: for the
+span of one `Process<Signal>` call the host installs a capture, each
+push appends to it, and `processorhelper` forwards the accumulated
+batch after the guest returns. Code 4 is therefore unreachable there,
+and code 3 means the push named a signal this call isn't processing,
+or arrived outside a process call altogether.
 
 ### `interruptible_sleep_ms(ms: i32) -> i32`
 
@@ -376,9 +410,9 @@ identical signatures and the same call site. The split exists so the
 export table alone says which role the plugin was *written* for, with
 no env var and no runtime declaration:
 
-- A **processor** hands its result to the next consumer, by calling
-  `push_<signal>` before returning. `process_` is the half that
-  forwards.
+- A **processor** emits its result by calling `push_<signal>` before
+  returning; the host collects those pushes and forwards them once
+  the call is over. `process_` is the half that produces output.
 - An **exporter** is terminal. Nothing downstream is wired, so
   `push_<signal>` from an exporter returns rc 3 (dead-end).
 
@@ -489,10 +523,11 @@ soon as the export returns.
 Return code `0` for success, non-zero for plugin-side errors; the host
 surfaces non-zero rcs as a `fmt.Errorf` and the framework treats it as
 a batch failure. A processor plugin typically decodes the payload,
-transforms the batch, re-encodes, and forwards via `push_<signal>`
-before returning `0` — note that a processor which returns `0` without
-forwarding has silently dropped the batch, which is a legitimate
-filter and also an easy bug.
+transforms the batch, re-encodes, and emits via `push_<signal>`
+before returning `0`. It may push more than once; the host appends
+each payload to the batch it returns upstream. A processor which
+returns `0` without pushing at all has dropped the whole batch — a
+legitimate filter, reported as `ErrNoOutput`, and also an easy bug.
 
 ## Runtime configuration
 
@@ -575,6 +610,11 @@ Pinned in `go.mod`:
 - `go.opentelemetry.io/collector/{component,consumer,pdata,receiver,processor,exporter}` —
   collector framework. The three `pdata/p{log,metric,trace}.{ProtoMarshaler,ProtoUnmarshaler}`
   encode and decode the bytes that cross the host/guest boundary.
+- `go.opentelemetry.io/collector/processor/processorhelper` — wraps
+  the processor factory for the metrics above. It is the one module
+  here outside the collector's stable v1 set, which is why
+  `ErrNoOutput` is declared in the shared package and translated in
+  `go/processor`, rather than the shared package importing it.
 - `go.uber.org/zap` — collector logger.
 
 ## Building and testing
