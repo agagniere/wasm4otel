@@ -225,8 +225,9 @@ dedups *components*; this would dedup *runtimes*.
 
 ### Wazero compiler mode
 
-Done, as the `engine` YAML field: `auto` (default), `interpreter`,
-`compiler`. The default was `interpreter` until informal measurement
+Done, as the `runtime.mode` YAML field: `auto` (default),
+`interpreter`, `compiled` — otelwasm's shape and spellings, plus our
+own `auto`. The default was `interpreter` until informal measurement
 put the interpreter at least an order of magnitude behind the
 compiler, which is more than enough to pay for wazero's probe;
 `auto` takes the compiler where the platform supports it and falls

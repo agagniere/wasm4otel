@@ -235,12 +235,12 @@ func NewComponent(
 			return nil, std_fmt.Errorf("wasm4otel %s: marshal plugin_config: %w", mode, err)
 		}
 	}
-	config.Engine = config.Engine.orDefault()
-	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path, "engine", config.Engine)
+	config.RuntimeConfig.Mode = config.RuntimeConfig.Mode.orDefault()
+	hostLogger.Infow("Loading WebAssembly plugin", "path", config.Path, "runtime_mode", config.RuntimeConfig.Mode)
 	// Detach from the framework's create-phase ctx — the component
 	// owns its own cancellation, ended only by Shutdown via `cancel`.
 	context, cancel := std_context.WithCancel(std_context.Background())
-	runtime := newRuntime(context, config.Engine)
+	runtime := newRuntime(context, config.RuntimeConfig.Mode)
 	return &Component{
 		mode:             mode,
 		logger:           hostLogger,
@@ -252,24 +252,24 @@ func NewComponent(
 	}, nil
 }
 
-func newRuntime(context std_context.Context, engine Engine) wazero.Runtime {
-	runtime := wazero.NewRuntimeWithConfig(context, engine.runtimeConfig())
+func newRuntime(context std_context.Context, mode RuntimeMode) wazero.Runtime {
+	runtime := wazero.NewRuntimeWithConfig(context, mode.runtimeConfig())
 	wasi_snapshot_preview1.MustInstantiate(context, runtime)
 	return runtime
 }
 
-// runtimeConfig maps the configured engine onto wazero's runtime
-// constructors. EngineAuto — the default — defers to wazero's own
-// probe: does this GOOS/GOARCH have a backend, and will the kernel
-// hand out executable pages. EngineCompiler is the unconditional
-// form: on a platform with no backend it panics inside wazero, which
-// is why the default asks for native speed through the probe rather
-// than by naming the compiler outright.
-func (engine Engine) runtimeConfig() wazero.RuntimeConfig {
-	switch engine {
-	case EngineCompiler:
+// runtimeConfig maps the configured mode onto wazero's runtime
+// constructors. RuntimeModeAuto — the default — defers to wazero's
+// own probe: does this GOOS/GOARCH have a backend, and will the
+// kernel hand out executable pages. RuntimeModeCompiled is the
+// unconditional form: on a platform with no backend it panics inside
+// wazero, which is why the default asks for native speed through the
+// probe rather than by naming the compiler outright.
+func (mode RuntimeMode) runtimeConfig() wazero.RuntimeConfig {
+	switch mode {
+	case RuntimeModeCompiled:
 		return wazero.NewRuntimeConfigCompiler()
-	case EngineAuto:
+	case RuntimeModeAuto:
 		return wazero.NewRuntimeConfig()
 	default:
 		return wazero.NewRuntimeConfigInterpreter()
