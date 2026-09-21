@@ -98,12 +98,17 @@ cannot tell which host it is running under.
 
 ## Tests
 
-Unlike the wazero module, this one has a test suite — `go test -race
-./...` covers the lifecycle end to end:
+This is the ABI conformance suite, and it is not wazy's alone: the
+file is byte-identical to [`go/wazero`](../wazero/README.md)'s copy and
+both modules run it against the same fixtures. Running one suite
+against both hosts is what checks the interchangeability the rest of
+this document claims — a plugin cannot tell the hosts apart only if
+the same tests pass under both. `go test -race ./...` covers the
+lifecycle end to end:
 
 | Test                            | What it pins                                                                                                   |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `TestProcessorRoundTrip`        | A batch survives marshal → alloc → memory write → `wasm4otel_process_logs` → `push_logs` → downstream sink.    |
+| `TestProcessorRoundTrip`        | A batch survives marshal → alloc → memory write → `wasm4otel_process_logs` → `push_logs` → the returned batch. |
 | `TestExporterIsTerminal`        | Exporter mode routes to `wasm4otel_export_logs`, and tolerates no downstream consumer.                         |
 | `TestReceiveLoopRunsAndStops`   | `Start` spawns `wasm4otel_receive` (it pushes a batch, so the sink proves it ran); `Shutdown` joins it.        |
 | `TestModeExportValidation`      | A processor-only plugin is rejected under `receivers:`.                                                        |
@@ -113,12 +118,15 @@ Unlike the wazero module, this one has a test suite — `go test -race
 | `TestGetConfigProbeThenRead`    | The `(0, 0)` probe, the undersized-buffer refusal, and the sized read.                                         |
 | `TestPoisonedAfterTrap`         | Once `broken` latches, further guest entries are refused rather than compounding corruption.                   |
 
-The fixtures in [`testdata/`](testdata) are hand-written WAT rather than
-compiled Zig, so the suite needs no toolchain beyond Go. The `.wasm`
-files are committed; regenerate them after editing a `.wat` with:
+The fixtures in [`../testdata/`](../testdata) are hand-written WAT
+rather than compiled Zig, so the suite needs no toolchain beyond Go.
+They sit above both modules because both run them: a fixture change
+lands on the two hosts at once, which is what keeps them honest. The
+`.wasm` files are committed; regenerate them after editing a `.wat`
+with:
 
 ```sh
-make -C testdata
+make -C ../testdata
 ```
 
 which needs [wasm-tools](https://github.com/bytecodealliance/wasm-tools).
