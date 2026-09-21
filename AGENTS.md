@@ -69,16 +69,22 @@ The standalone `zig/Makefile` is a legacy single-file workflow (build one `.zig`
 
 ### Go host
 
-From `go/wazero/` or `go/wazy/` — they are separate modules, so build and test each:
+From the repo root, `make test` builds, vets and tests both modules and first checks their conformance suites are still identical:
+
+```sh
+make test
+```
+
+Or from `go/wazero/` or `go/wazy/` individually — they are separate modules, so build and test each:
 
 ```sh
 go build ./...
-go test -race ./...     # only go/wazy has tests today
+go test -race ./...
 ```
 
 Each role subpackage exports `NewFactory()` for use inside an OTel Collector distribution — e.g. `github.com/agagniere/wasm4otel/go/wazy/receiver`, `.../processor`, `.../exporter`. The shared `wasm4otel` package at each module root is not imported directly by operators; it holds the `Component` type and the host imports the role packages share. There is no standalone binary in this repo.
 
-`go/wazy`'s test suite is the ABI conformance check. Its fixtures are hand-written WAT in `go/wazy/testdata/`, committed as `.wasm` so `go test` needs no toolchain beyond Go; regenerate with `make -C testdata` (needs `wasm-tools`) after editing a `.wat`. When changing the ABI, update a fixture and watch the test fail before changing the host. The fixtures duplicate what the Zig guests express, on purpose: they run with no Zig toolchain, and `full_plugin.wat` is the WAT counterpart of `zig/freestanding/helloworld.zig`.
+The ABI conformance suite is `component_test.go`, and **both** hosts run it: the file is byte-identical in `go/wazero` and `go/wazy`, and the two modules share one set of fixtures in `go/testdata/`. That is the point — a test that passes under one runtime and not the other is the only way the hosts can drift without the `diff` catching it, so keep the copies identical and add tests to both at once (`diff go/wazero/component_test.go go/wazy/component_test.go` must stay empty). The fixtures are hand-written WAT, committed as `.wasm` so `go test` needs no toolchain beyond Go; regenerate with `make -C go/testdata` (needs `wasm-tools`) after editing a `.wat`. When changing the ABI, update a fixture and watch the test fail before changing the host. The fixtures duplicate what the Zig guests express, on purpose: they run with no Zig toolchain, and `full_plugin.wat` is the WAT counterpart of `zig/freestanding/helloworld.zig`.
 
 ## Things that are easy to get wrong
 

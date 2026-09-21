@@ -703,9 +703,17 @@ go build ./...
 go test ./...
 ```
 
-There are no tests in this module today. The
-[`go/wazy`](../wazy/README.md) module has them — hand-written WAT
-fixtures driven against a `consumertest` sink — and since both modules
-speak the same ABI, that suite is the conformance check for this one
-too. Porting it here is the obvious next step; the fixtures in
-[`../wazy/testdata/`](../wazy/testdata) are runtime-agnostic.
+`component_test.go` is the ABI conformance suite, and it is
+byte-identical to [`go/wazy`](../wazy/README.md)'s copy — the two
+modules also share one set of fixtures, in
+[`../testdata/`](../testdata). Since both hosts implement the same ABI,
+running the same tests against both is what turns "these two are
+interchangeable" from a claim in a README into something checked. Keep
+the copies identical:
+
+```sh
+diff ../wazero/component_test.go ../wazy/component_test.go
+```
+
+See [`../wazy/README.md`](../wazy/README.md#tests) for what each test
+pins.
