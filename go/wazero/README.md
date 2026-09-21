@@ -361,24 +361,52 @@ their WASI imports under that exact module name; the
 `imports/wasi_snapshot_preview1` package registers a host module to
 resolve them.
 
-## Host function signatures via Go reflection
+## Host function signatures on the stack ABI
 
-The host functions passed to `WithFunc(...)` look like ordinary Go
-functions — `logToZap` and `outboundLogs` don't manually parse wasm
-values or stack frames. Wazero figures out the wasm signature from
-the Go signature using reflection:
+wazero offers two ways to register a host import. `WithFunc(fn)`
+takes an ordinary Go function and derives the wasm signature from its
+type by reflection — convenient, but it pays a `reflect.Call` on
+every guest→host crossing. `WithGoModuleFunction(fn, params, results)`
+hands the host a raw `[]uint64` operand stack plus the declared value
+types, and costs nothing beyond the call itself. This ABI crosses the
+boundary constantly — `get_config` at load, `host_log` whenever the
+plugin feels like it, a `push_<signal>` per batch — so the components
+use the stack path. On the conformance fixture a `ProcessLogs` round
+trip went from 1157 ns / 27 allocs to 426 ns / 20 allocs: 2.7x.
 
-- The first parameter may be `context.Context`. If present, wazero
-  passes the call's context.
-- The next parameter may be `api.Module`. If present, wazero passes
-  the calling module — used for `module.Memory().Read(ptr, size)`.
-- Remaining parameters and the return value are matched 1:1 against
-  wasm value types: `int32`/`uint32` ↔ `i32`, `int64`/`uint64` ↔ `i64`,
-  `float32` ↔ `f32`, `float64` ↔ `f64`. No other Go types are valid.
+The verbosity is packed into three helpers — `hostProc3`,
+`hostFunc2`, `hostFunc1`, one per arity this ABI uses — so the
+registration stays a line per import:
 
-Memory and string conversions are not automatic — pointer/length
-pairs come through as `i32`s and the host calls
-`module.Memory().Read(...)` to materialize them as `[]byte`.
+```go
+builder := self.runtime.NewHostModuleBuilder("env")
+hostProc3(builder.NewFunctionBuilder(), self.logToZap).Export("host_log")
+hostFunc2(builder.NewFunctionBuilder(), self.outboundLogs).Export("push_logs")
+// ...
+_, err := builder.Instantiate(self.context)
+```
+
+`hostFuncN` is for a handler returning a value, `hostProcN` for one
+returning nothing; `N` counts the wasm-level parameters. The names are
+borrowed from [`go/wazy`](../wazy/README.md), which registers the same
+imports through its `wazy.HostFuncN` / `HostProcN` generics, so the
+two hosts' registration blocks read alike.
+
+Inside a helper the operand stack is decoded and encoded by hand —
+`api.DecodeI32` / `api.DecodeU32` per parameter, `api.EncodeU32` for
+the result, written back over `stack[0]`. The `[]api.ValueType` lists
+spelling out the wasm signature are hand-written too, and nothing
+checks them against the Go handler: a mismatch surfaces only when a
+guest fails to link against the import. The conformance fixtures
+declare every import explicitly, which is what turns that into a test
+failure rather than a field report.
+
+Memory and string conversions are not automatic either — pointer and
+length arrive as `i32`s and the host calls `module.Memory().Read(...)`
+to materialize them as `[]byte`. The `api.Module` a helper forwards to
+its handler is the calling module, which is what makes that read
+possible. `hostFunc1` omits it: `interruptible_sleep_ms` never touches
+guest memory.
 
 ## Host imports (what the guest can call)
 

@@ -351,18 +351,84 @@ func (mode RuntimeMode) runtimeConfig() wazero.RuntimeConfig {
 	}
 }
 
+// hostProc3, hostFunc2 and hostFunc1 register a host import against
+// wazero's stack ABI, one helper per arity this ABI uses. wazero
+// offers two registration paths: WithFunc, which derives the wasm
+// signature from the Go function by reflection and pays a
+// reflect.Call on every guest->host crossing, and
+// WithGoModuleFunction, which hands the host a raw []uint64 operand
+// stack and costs nothing beyond the call itself. This ABI crosses
+// the boundary constantly -- get_config, host_log, and a push_<signal>
+// per batch -- so the stack path is worth the extra verbosity.
+//
+// The helpers exist to buy that back: they are deliberately named
+// after wazy's HostFuncN / HostProcN generics so the registration
+// block below reads the same under both hosts. The difference is
+// where the type checking happens. wazy derives the signature from
+// the Go types, so a mismatch is a compile error; here the
+// api.ValueType lists are written out by hand and a mismatch surfaces
+// when the guest fails to link. The conformance fixtures declare
+// these imports explicitly, so the suite catches it.
+func hostProc3(
+	builder wazero.HostFunctionBuilder,
+	fn func(std_context.Context, wazero_api.Module, int32, uint32, uint32),
+) wazero.HostFunctionBuilder {
+	return builder.WithGoModuleFunction(
+		wazero_api.GoModuleFunc(func(context std_context.Context, module wazero_api.Module, stack []uint64) {
+			fn(context, module,
+				wazero_api.DecodeI32(stack[0]),
+				wazero_api.DecodeU32(stack[1]),
+				wazero_api.DecodeU32(stack[2]))
+		}),
+		[]wazero_api.ValueType{wazero_api.ValueTypeI32, wazero_api.ValueTypeI32, wazero_api.ValueTypeI32},
+		nil,
+	)
+}
+
+func hostFunc2(
+	builder wazero.HostFunctionBuilder,
+	fn func(std_context.Context, wazero_api.Module, uint32, uint32) uint32,
+) wazero.HostFunctionBuilder {
+	return builder.WithGoModuleFunction(
+		wazero_api.GoModuleFunc(func(context std_context.Context, module wazero_api.Module, stack []uint64) {
+			stack[0] = wazero_api.EncodeU32(fn(context, module,
+				wazero_api.DecodeU32(stack[0]),
+				wazero_api.DecodeU32(stack[1])))
+		}),
+		[]wazero_api.ValueType{wazero_api.ValueTypeI32, wazero_api.ValueTypeI32},
+		[]wazero_api.ValueType{wazero_api.ValueTypeI32},
+	)
+}
+
+// hostFunc1 takes no api.Module: interruptible_sleep_ms never touches
+// guest memory, and wazero -- unlike wazy -- does not require the
+// parameter. That asymmetry is the one place these helpers cannot
+// mirror wazy's exactly.
+func hostFunc1(
+	builder wazero.HostFunctionBuilder,
+	fn func(std_context.Context, uint32) uint32,
+) wazero.HostFunctionBuilder {
+	return builder.WithGoModuleFunction(
+		wazero_api.GoModuleFunc(func(context std_context.Context, _ wazero_api.Module, stack []uint64) {
+			stack[0] = wazero_api.EncodeU32(fn(context, wazero_api.DecodeU32(stack[0])))
+		}),
+		[]wazero_api.ValueType{wazero_api.ValueTypeI32},
+		[]wazero_api.ValueType{wazero_api.ValueTypeI32},
+	)
+}
+
 // Provide a callback accessible from the guest to log
 // and functions to push logs/metrics/traces to the next consumer
 func (self *Component) ExposeFunctionsToGuest() error {
 	self.guestLogger = self.logger.With("plugin", self.config.Path)
-	_, err := self.runtime.NewHostModuleBuilder("env").
-		NewFunctionBuilder().WithFunc(self.logToZap).Export("host_log").
-		NewFunctionBuilder().WithFunc(self.outboundLogs).Export("push_logs").
-		NewFunctionBuilder().WithFunc(self.outboundMetrics).Export("push_metrics").
-		NewFunctionBuilder().WithFunc(self.outboundTraces).Export("push_traces").
-		NewFunctionBuilder().WithFunc(self.interruptibleSleepMs).Export("interruptible_sleep_ms").
-		NewFunctionBuilder().WithFunc(self.getConfig).Export("get_config").
-		Instantiate(self.context)
+	builder := self.runtime.NewHostModuleBuilder("env")
+	hostProc3(builder.NewFunctionBuilder(), self.logToZap).Export("host_log")
+	hostFunc2(builder.NewFunctionBuilder(), self.outboundLogs).Export("push_logs")
+	hostFunc2(builder.NewFunctionBuilder(), self.outboundMetrics).Export("push_metrics")
+	hostFunc2(builder.NewFunctionBuilder(), self.outboundTraces).Export("push_traces")
+	hostFunc1(builder.NewFunctionBuilder(), self.interruptibleSleepMs).Export("interruptible_sleep_ms")
+	hostFunc2(builder.NewFunctionBuilder(), self.getConfig).Export("get_config")
+	_, err := builder.Instantiate(self.context)
 	return err
 }
 
