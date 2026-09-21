@@ -356,13 +356,15 @@ func (mode RuntimeMode) runtimeConfig() wazy.RuntimeConfig {
 // Provide a callback accessible from the guest to log
 // and functions to push logs/metrics/traces to the next consumer
 //
-// This is the one place the two hosts genuinely diverge. wazy dropped
-// wazero's reflection-based WithFunc in favour of typed generics, so
-// each import is registered through the HostFuncN / HostProcN helper
-// matching its arity (HostProc for the void-returning host_log). The
-// wasm signature is derived from the Go types at compile time: an arity
-// or type mismatch is a build error here, where under wazero it is a
-// panic when the host module is instantiated.
+// This is the one place the two hosts genuinely diverge, though less
+// than it once did. Each import is registered through the HostFuncN /
+// HostProcN helper matching its arity (HostProc for the void-returning
+// host_log), and the wazero host has local helpers of the same names
+// over WithGoModuleFunction, so the block below reads the same there.
+// What is left of the difference is where the signature is checked:
+// wazy derives it from the Go types, so an arity or type mismatch is a
+// build error, while wazero's api.ValueType lists are hand-written and
+// a mismatch only surfaces when the guest fails to link.
 //
 // The helpers require api.Module as the second parameter, which is why
 // interruptibleSleepMs carries one it has no use for.

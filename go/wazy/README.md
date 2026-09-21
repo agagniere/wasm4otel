@@ -67,7 +67,7 @@ Four things, all in `component.go`:
 
 ### Host imports are registered with typed generics
 
-wazy deliberately dropped wazero's reflection-based
+wazy deleted wazero's reflection-based
 `NewFunctionBuilder().WithFunc(fn)`, which derives a wasm signature
 from a Go function's type at *runtime*. In its place are
 compile-time-typed helpers, one per arity:
@@ -81,10 +81,19 @@ _, err := builder.Instantiate(self.context)
 ```
 
 `HostFuncN` is for a handler returning a value, `HostProcN` for one
-returning nothing; `N` counts the wasm-level parameters. A mismatched
-arity or an unrepresentable parameter type is a **compile error** here,
-where under wazero the equivalent mistake panics when the host module
-is instantiated. That is the main practical win of the port.
+returning nothing; `N` counts the wasm-level parameters.
+
+The wazero host does not use `WithFunc` either: it registers through
+`WithGoModuleFunction`, wazero's raw `[]uint64` operand stack, behind
+local `hostFuncN` / `hostProcN` helpers named after these ones — so
+the two registration blocks are the same shape line for line, and a
+benchmark comparing the hosts measures the runtimes rather than two
+different registration APIs. What is left of the difference is where a
+mistake is caught. Here the wasm signature comes from the Go types, so
+a wrong arity or an unrepresentable parameter is a **compile error**;
+there the `api.ValueType` lists are hand-written and a mismatch only
+shows up when a guest fails to link. That is the practical win of the
+generics.
 
 The helpers require `api.Module` as the second parameter, so
 `interruptibleSleepMs` carries one it never uses — the wazero version
