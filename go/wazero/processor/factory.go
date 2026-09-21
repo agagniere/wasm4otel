@@ -30,7 +30,7 @@ import (
 // Component.ProcessLogs.
 func NewFactory() otel_processor.Factory {
 	return otel_processor.NewFactory(
-		otel_component.MustNewType("wasm4otel"),
+		wasm4otel.ComponentType,
 		wasm4otel.DefaultConfig,
 		otel_processor.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
 		otel_processor.WithMetrics(createMetrics, otel_component.StabilityLevelDevelopment),

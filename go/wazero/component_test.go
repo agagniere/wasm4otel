@@ -10,7 +10,6 @@ import (
 
 	otel_receiver "go.opentelemetry.io/collector/receiver"
 
-	otel_component "go.opentelemetry.io/collector/component"
 	otel_consumertest "go.opentelemetry.io/collector/consumer/consumertest"
 	otel_logs "go.opentelemetry.io/collector/pdata/plog"
 	otel_receivertest "go.opentelemetry.io/collector/receiver/receivertest"
@@ -22,7 +21,7 @@ import (
 // Load is the point — in receiver mode the obsreport is wired at the
 // same moment as the next consumer, and push_<signal> relies on it.
 func nopReceiverSettings() otel_receiver.Settings {
-	return otel_receivertest.NewNopSettings(otel_component.MustNewType("wasm4otel"))
+	return otel_receivertest.NewNopSettings(ComponentType)
 }
 
 const (
