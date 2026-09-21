@@ -259,11 +259,12 @@ func newRuntime(context std_context.Context, engine Engine) wazero.Runtime {
 }
 
 // runtimeConfig maps the configured engine onto wazero's runtime
-// constructors. EngineAuto defers to wazero's own probe — does this
-// GOOS/GOARCH have a backend, and will the kernel hand out executable
-// pages — while EngineCompiler is unconditional: on a platform with
-// no backend it panics inside wazero, which is why the YAML default
-// is the interpreter and not the faster choice.
+// constructors. EngineAuto — the default — defers to wazero's own
+// probe: does this GOOS/GOARCH have a backend, and will the kernel
+// hand out executable pages. EngineCompiler is the unconditional
+// form: on a platform with no backend it panics inside wazero, which
+// is why the default asks for native speed through the probe rather
+// than by naming the compiler outright.
 func (engine Engine) runtimeConfig() wazero.RuntimeConfig {
 	switch engine {
 	case EngineCompiler:

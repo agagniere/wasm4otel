@@ -119,7 +119,7 @@ exporters:
 receivers:
   wasm4otel:
     path: /path/to/plugin.wasm   # required
-    engine: interpreter          # optional: interpreter | compiler | auto
+    engine: auto                 # optional: auto | interpreter | compiler
     plugin_config:               # optional, free-form map
       key: value
 ```
@@ -127,7 +127,7 @@ receivers:
 | Field           | Type                     | Notes                                                                |
 | --------------- | ------------------------ | -------------------------------------------------------------------- |
 | `path`          | string (required)        | Filesystem path to the `.wasm` module. `Validate` errors if empty.   |
-| `engine`        | enum, default `interpreter` | wazero execution backend — see *Runtime configuration* below. `Validate` rejects anything else. |
+| `engine`        | enum, default `auto`     | wazero execution backend — see *Runtime configuration* below. `Validate` rejects anything else. |
 | `plugin_config` | `map[string]interface{}` | Marshalled to JSON once at load-time; the guest reads it via the `get_config` host import. |
 
 ## Lifecycle
@@ -502,25 +502,29 @@ do — a module that loads under one loads under the other.
 
 | `engine`      | wazero constructor              | Notes                                                                     |
 | ------------- | ------------------------------- | ------------------------------------------------------------------------- |
-| `interpreter` | `NewRuntimeConfigInterpreter()` | Default. Pure Go, no JIT, runs anywhere Go runs and needs no executable memory. |
+| `auto`        | `NewRuntimeConfig()`            | Default. wazero probes the platform: compiler where it works, interpreter elsewhere. |
+| `interpreter` | `NewRuntimeConfigInterpreter()` | Pure Go, no JIT, runs anywhere Go runs and needs no executable memory. An order of magnitude slower. |
 | `compiler`    | `NewRuntimeConfigCompiler()`    | Compiles to native code at load time. **Panics on platforms with no backend** — see below. |
-| `auto`        | `NewRuntimeConfig()`            | wazero probes the platform: compiler where it works, interpreter elsewhere. |
 
-The default stays `interpreter` because `compiler` is the one value
-that can take the collector down. wazero has backends for `amd64` and
+`auto` is the default because it is the portable way to ask for native
+speed, and native speed is worth asking for: informal measurement puts
+the interpreter at least an order of magnitude behind the compiler on
+these plugins. `auto` runs wazero's own probe — the GOOS/GOARCH table
+*and* a live check that the kernel will hand out executable pages —
+and falls back to the interpreter when either fails, which also covers
+hardened hosts where `mmap` with `PROT_EXEC` is denied on a supported
+architecture.
+
+What the default is *not* is `compiler`, which is the one value that
+can take the collector down. wazero has backends for `amd64` and
 `arm64` only, and `NewRuntimeConfigCompiler` is unconditional: on
 anything else — s390x, ppc64le, riscv64 — the engine constructor hits
 `panic("unsupported architecture")` while the component is being
 created. That is a panic, not an error return, so it is not something
 `Validate` can catch from the YAML; the config is well-formed, the
-machine just can't honour it.
-
-`auto` is the portable way to ask for native speed. It runs wazero's
-own probe — the GOOS/GOARCH table *and* a live check that the kernel
-will hand out executable pages — and falls back to the interpreter
-when either fails, which also covers hardened hosts where `mmap` with
-`PROT_EXEC` is denied on a supported architecture. Use `compiler` only
-to assert a known deployment target and fail loudly if it changes.
+machine just can't honour it. Use `compiler` only to assert a known
+deployment target and fail loudly if it changes, and `interpreter` to
+rule native codegen out entirely.
 
 One wrinkle when reading logs: the `engine` field of the
 `Loading WebAssembly plugin` line echoes what was configured, so

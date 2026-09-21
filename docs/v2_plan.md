@@ -225,11 +225,13 @@ dedups *components*; this would dedup *runtimes*.
 
 ### Wazero compiler mode
 
-Done, as the `engine` YAML field: `interpreter` (default), `compiler`,
-`auto`. What's left is the measurement — nothing here has been
-benchmarked, so the default is still the portable backend rather than
-the fast one. Flipping it to `auto` is a one-line change to
-`DefaultConfig` once numbers justify it.
+Done, as the `engine` YAML field: `auto` (default), `interpreter`,
+`compiler`. The default was `interpreter` until informal measurement
+put the interpreter at least an order of magnitude behind the
+compiler, which is more than enough to pay for wazero's probe;
+`auto` takes the compiler where the platform supports it and falls
+back on its own everywhere else. No rigorous benchmark exists yet, so
+a proper harness is still worth building.
 
 ### WASIp2 / arcjet/gravity
 

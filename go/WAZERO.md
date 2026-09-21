@@ -23,7 +23,7 @@ wazero has two execution backends:
   plus dragonfly/solaris/illumos, and only with SSE4.1.
 
 `wasm4otel` exposes the choice as the `engine` YAML field —
-`interpreter` (default), `compiler`, or `auto` — see
+`auto` (default), `interpreter`, or `compiler` — see
 [`go/README.md`](README.md#runtime-configuration) for which to pick.
 Both backends implement the same feature set — including v1.12.0's new
 proposals, which have real lowerings in the compiler frontend, not
