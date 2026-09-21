@@ -22,19 +22,19 @@ wazero has two execution backends:
   `arm64` on linux/darwin/freebsd/netbsd/windows; `amd64` on those
   plus dragonfly/solaris/illumos, and only with SSE4.1.
 
-`wasm4otel` exposes the choice as the `engine` YAML field —
-`auto` (default), `interpreter`, or `compiler` — see
+`wasm4otel` exposes the choice as the `runtime.mode` YAML field —
+`auto` (default), `interpreter`, or `compiled` — see
 [`go/README.md`](README.md#runtime-configuration) for which to pick.
 Both backends implement the same feature set — including v1.12.0's new
 proposals, which have real lowerings in the compiler frontend, not
 stubs — so the choice is purely performance vs portability.
 
 The fallback is worth being precise about, because it is what makes
-`auto` safe and `compiler` sharp. `NewRuntimeConfig` (our `auto`) runs
+`auto` safe and `compiled` sharp. `NewRuntimeConfig` (our `auto`) runs
 `platform.CompilerSupports`: the table above, *and* a live probe that
 mmaps one executable page and mprotects it. Either failing selects the
 interpreter, so a hardened host that refuses `PROT_EXEC` degrades
-rather than breaks. `NewRuntimeConfigCompiler` (our `compiler`) skips
+rather than breaks. `NewRuntimeConfigCompiler` (our `compiled`) skips
 the probe entirely and goes straight to `wazevo`, whose `newMachine()`
 is `panic("unsupported architecture")` outside amd64/arm64.
 
