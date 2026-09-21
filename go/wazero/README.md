@@ -1,6 +1,6 @@
-# `go/` — collector host
+# `go/wazero/` — collector host
 
-Go module: `github.com/agagniere/wasm4otel/go`.
+Go module: `github.com/agagniere/wasm4otel/go/wazero`.
 
 This module implements three OpenTelemetry Collector components —
 receiver, processor, and exporter — that instantiate a WebAssembly
@@ -8,7 +8,13 @@ plugin via [wazero](https://github.com/tetratelabs/wazero) and route
 telemetry through the pipeline. The shared `Component` type lives in
 the root package and the three role factories live in subpackages.
 
-See the repository [README](../README.md) for the high-level picture.
+It is the reference host. [`go/wazy`](../wazy/README.md) is a sibling
+module offering the same three factories on
+[wazy](https://github.com/samyfodil/wazy), a wazero fork with native
+WASI 0.2 / Component Model support; the two speak the same plugin ABI
+and a collector build imports one of them, not both.
+
+See the repository [README](../../README.md) for the high-level picture.
 This document covers the implementation details that matter when
 embedding any of the factories, debugging plugin loading, or extending
 the host side of the ABI.
@@ -16,7 +22,7 @@ the host side of the ABI.
 ## Layout
 
 ```
-go/
+go/wazero/
 ├── component.go                       package wasm4otel
 ├── config.go                          package wasm4otel
 ├── receiver/factory.go                package wasm4otelreceiver
@@ -37,9 +43,9 @@ exports the matching signal needs.
 
 ```go
 import (
-    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/receiver"
-    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/processor"
-    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/exporter"
+    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/wazero/receiver"
+    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/wazero/processor"
+    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/wazero/exporter"
 )
 
 wasm4otelreceiver.NewFactory()  // receiver.Factory
@@ -103,18 +109,18 @@ A manifest snippet wiring up all three roles:
 
 ```yaml
 receivers:
-  - gomod: github.com/agagniere/wasm4otel/go v0.0.1
-    import: github.com/agagniere/wasm4otel/go/receiver
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazero/receiver
     name: wasm4otel_receiver
 
 processors:
-  - gomod: github.com/agagniere/wasm4otel/go v0.0.1
-    import: github.com/agagniere/wasm4otel/go/processor
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazero/processor
     name: wasm4otel_processor
 
 exporters:
-  - gomod: github.com/agagniere/wasm4otel/go v0.0.1
-    import: github.com/agagniere/wasm4otel/go/exporter
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazero/exporter
     name: wasm4otel_exporter
 ```
 
@@ -697,6 +703,17 @@ go build ./...
 go test ./...
 ```
 
-There are no tests in the package today; adding integration tests
-would mean instantiating a tiny `.wasm` fixture against a `consumertest`
-sink.
+`component_test.go` is the ABI conformance suite, and it is
+byte-identical to [`go/wazy`](../wazy/README.md)'s copy — the two
+modules also share one set of fixtures, in
+[`../testdata/`](../testdata). Since both hosts implement the same ABI,
+running the same tests against both is what turns "these two are
+interchangeable" from a claim in a README into something checked. Keep
+the copies identical:
+
+```sh
+diff ../wazero/component_test.go ../wazy/component_test.go
+```
+
+See [`../wazy/README.md`](../wazy/README.md#tests) for what each test
+pins.

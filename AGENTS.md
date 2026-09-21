@@ -4,16 +4,21 @@ This file provides guidance to LLMs when working with code in this repository.
 
 ## What this project is
 
-`wasm4otel` is a set of OpenTelemetry Collector components that run WebAssembly plugins. The host (Go) embeds [wazero](https://github.com/tetratelabs/wazero) and instantiates a guest `.wasm` plugin; the guest can act as a receiver (drives its own loop, pushes telemetry), a processor (transforms each batch handed to it), or an exporter (terminally consumes each batch).
+`wasm4otel` is a set of OpenTelemetry Collector components that run WebAssembly plugins. The host (Go) embeds a wasm runtime and instantiates a guest `.wasm` plugin; the guest can act as a receiver (drives its own loop, pushes telemetry), a processor (transforms each batch handed to it), or an exporter (terminally consumes each batch).
 
-The repo has two top-level pieces:
+The repo has three top-level pieces:
 
-- `go/` — the host. Single Go module (`github.com/agagniere/wasm4otel/go`) with four packages: a shared `wasm4otel` package holding the `Component` type and host imports, plus three role packages (`go/receiver`, `go/processor`, `go/exporter`) each exposing `NewFactory()`.
+- `go/` — the host, as **two interchangeable Go modules** providing the same three factories on different runtimes. A collector build imports one, not both.
+  - `go/wazero` (`github.com/agagniere/wasm4otel/go/wazero`) — the reference host, on [wazero](https://github.com/tetratelabs/wazero).
+  - `go/wazy` (`github.com/agagniere/wasm4otel/go/wazy`) — the same host on [wazy](https://github.com/samyfodil/wazy), a wazero fork with native WASI 0.2 / Component Model support. This is the module with tests.
+
+  Each module has four packages: a shared `wasm4otel` package holding the `Component` type and host imports, plus three role packages (`receiver`, `processor`, `exporter`) each exposing `NewFactory()`.
 - `zig/` — example guest plugins built in Zig (three freestanding, two WASI preview1 reactors) plus shared modules.
+- `interface/` — the same ABI restated declaratively in WIT (`wasm4otel.wit`). A proposal: nothing consumes it yet. Validate with `wasm-tools component wit interface/wasm4otel.wit`.
 
 ## Host/guest ABI
 
-The contract between Go and the guest is defined imperatively in `go/component.go`. Keep both sides in sync when changing it.
+The contract between Go and the guest is defined imperatively in `go/wazero/component.go` and `go/wazy/component.go`. Those two files are deliberately kept near-identical — a change to one belongs in the other, and `diff` between them should show only the runtime-specific parts listed in `go/wazy/README.md`. Keep the guests, both hosts, and `interface/wasm4otel.wit` in sync when changing the contract.
 
 Host imports exposed in the `env` module (called from the guest):
 - `host_log(level: i32, ptr, size)` — level matches `go.uber.org/zap/zapcore.Level` (debug=-1, info=0, …). The Zig side mirrors this in `zig/src/log.zig`'s `LogLevel` enum.
@@ -64,14 +69,22 @@ The standalone `zig/Makefile` is a legacy single-file workflow (build one `.zig`
 
 ### Go host
 
-From `go/`:
+From the repo root, `make test` builds, vets and tests both modules and first checks their conformance suites are still identical:
+
+```sh
+make test
+```
+
+Or from `go/wazero/` or `go/wazy/` individually — they are separate modules, so build and test each:
 
 ```sh
 go build ./...
-go test ./...
+go test -race ./...
 ```
 
-Each role subpackage exports `NewFactory()` for use inside an OTel Collector distribution — `github.com/agagniere/wasm4otel/go/receiver`, `.../go/processor`, `.../go/exporter`. The shared `github.com/agagniere/wasm4otel/go` package is not imported directly by operators; it holds the `Component` type and the host imports the role packages share. There is no standalone binary in this repo.
+Each role subpackage exports `NewFactory()` for use inside an OTel Collector distribution — e.g. `github.com/agagniere/wasm4otel/go/wazy/receiver`, `.../processor`, `.../exporter`. The shared `wasm4otel` package at each module root is not imported directly by operators; it holds the `Component` type and the host imports the role packages share. There is no standalone binary in this repo.
+
+The ABI conformance suite is `component_test.go`, and **both** hosts run it: the file is byte-identical in `go/wazero` and `go/wazy`, and the two modules share one set of fixtures in `go/testdata/`. That is the point — a test that passes under one runtime and not the other is the only way the hosts can drift without the `diff` catching it, so keep the copies identical and add tests to both at once (`diff go/wazero/component_test.go go/wazy/component_test.go` must stay empty). The fixtures are hand-written WAT, committed as `.wasm` so `go test` needs no toolchain beyond Go; regenerate with `make -C go/testdata` (needs `wasm-tools`) after editing a `.wat`. When changing the ABI, update a fixture and watch the test fail before changing the host. The fixtures duplicate what the Zig guests express, on purpose: they run with no Zig toolchain, and `full_plugin.wat` is the WAT counterpart of `zig/freestanding/helloworld.zig`.
 
 ## Things that are easy to get wrong
 
@@ -79,8 +92,10 @@ Each role subpackage exports `NewFactory()` for use inside an OTel Collector dis
 - `wasi_exec_model = .reactor` on wasip1 plugins is what makes wasm-ld require `_initialize` as the entry symbol (vs `_start` in command/freestanding). Zig 0.16 does not auto-emit either — the plugin source must `@export` the function (see `wasip1/log_generator.zig`). Wazero itself doesn't auto-detect; `LoadPlugin` passes both names to `WithStartFunctions(...)` so whichever the plugin declares gets called.
 - `host_log` log levels are zap levels, not `std.log.Level` values. `zig/src/log.zig` has `LogLevel.fromStd` to bridge them — use `hostLog`/`hostLogFormat`/`logFn` from that module rather than calling `host_log` directly.
 - `push_logs` expects an OTLP `LogsData` protobuf payload; the encoding lives in the generated `Logs` types re-exported through `zig/src/pipeline.zig` (`otel_pipeline_data` module).
-- The wazero execution backend is the `runtime.mode` YAML field (`auto` | `interpreter` | `compiled`), mapped in `RuntimeMode.runtimeConfig()`. Field name, nesting and the two non-`auto` values are otelwasm's, so its config sections load here; `auto` is our extension. It defaults to `auto`, so on amd64/arm64 assume measurements were taken compiled — the interpreter is at least an order of magnitude slower, which is why `auto` won the default. `compiled` is deliberately not the default: `NewRuntimeConfigCompiler()` panics inside wazero on any arch but amd64/arm64, and a panic at component-create time isn't something `Config.Validate` can turn into a YAML error — `auto` is the value that probes and falls back.
-- Don't confuse `RuntimeMode` (wazero backend, from YAML) with `ComponentMode` (receiver/processor/exporter, from the factory). The zap field for the former is `runtime_mode` for that reason.
-- Wazero is deterministic by default: without explicit opt-ins a guest sees a frozen `2022-01-01T00:00:00Z` clock and a seeded `random_get`. `LoadPlugin` wires `WithSysWalltime`, `WithSysNanotime` and `WithRandSource(crypto/rand.Reader)`, so plugins get real time and real entropy — but *not* `WithSysNanosleep`, because pacing goes through the `interruptible_sleep_ms` host import instead. Don't add `WithSysNanosleep` to "fix" a plugin whose WASI sleep returns immediately; move the plugin to `interruptibleSleep`. `go/WAZERO.md` has the full table.
-- Processor/exporter plugins are single-occupant — `Component.callMu` serializes every `Call()` into the wasm instance, because wazero modules are not safe for concurrent calls. The receiver-mode `wasm4otel_receive` goroutine runs without the mutex (it owns the instance for its lifetime), which is why one `Component` plays one role even when the plugin exports enough to play several. The single-occupancy rule binds per instance, not per export set, so multi-role plugins are still safe — they just get an instance per YAML section.
+- The execution backend is the `runtime.mode` YAML field (`auto` | `interpreter` | `compiled`), mapped in `RuntimeMode.runtimeConfig()` in **both** hosts — wazy inherits wazero's three runtime-config constructors, so the field means the same thing either side. Field name, nesting and the two non-`auto` values are otelwasm's, so its config sections load here; `auto` is our extension. It defaults to `auto`, so on amd64/arm64 assume measurements were taken compiled — the interpreter is at least an order of magnitude slower, which is why `auto` won the default. `compiled` is deliberately not the default: `NewRuntimeConfigCompiler()` panics inside the runtime on any arch but amd64/arm64, and a panic at component-create time isn't something `Config.Validate` can turn into a YAML error — `auto` is the value that probes and falls back.
+- Don't confuse `RuntimeMode` (wasm backend, from YAML) with `ComponentMode` (receiver/processor/exporter, from the factory). The zap field for the former is `runtime_mode` for that reason.
+- Both runtimes are deterministic by default: without explicit opt-ins a guest sees a frozen `2022-01-01T00:00:00Z` clock and a seeded `random_get`. `LoadPlugin` wires `WithSysWalltime`, `WithSysNanotime` and `WithRandSource(crypto/rand.Reader)`, so plugins get real time and real entropy — but *not* `WithSysNanosleep`, because pacing goes through the `interruptible_sleep_ms` host import instead. Don't add `WithSysNanosleep` to "fix" a plugin whose WASI sleep returns immediately; move the plugin to `interruptibleSleep`. `go/wazero/WAZERO.md` has the full table.
+- Processor/exporter plugins are single-occupant — `Component.callMu` serializes every `Call()` into the wasm instance, because a wasm module is not safe for concurrent calls. The receiver-mode `wasm4otel_receive` goroutine runs without the mutex (it owns the instance for its lifetime), which is why one `Component` plays one role even when the plugin exports enough to play several. The single-occupancy rule binds per instance, not per export set, so multi-role plugins are still safe — they just get an instance per YAML section.
 - After any guest trap (`wasm4otel_setup`, `wasm4otel_start`, `wasm4otel_receive`, `wasm4otel_alloc`, a batch export, `wasm4otel_free`, `wasm4otel_shutdown`), `Component.broken` latches and further guest entries fail closed. The collector will see a stream of errors; we don't try to recover the instance. `receiveLoop` latches it by hand, since it runs outside `invoke()`.
+- `go/wazy` cannot use wazero's reflection-based `WithFunc` — wazy deleted it in favour of the compile-time-typed `wazy.HostFuncN` / `HostProcN` generics. They require `api.Module` as the second parameter, which is why `interruptibleSleepMs` there carries one it never uses. See `go/wazy/README.md`.
+- The two `component.go` files are duplicated on purpose, not factored into a shared package: the two runtimes' types are unrelated, so a shared abstraction would mean an interface layer over `api.Module` / `api.Function` for no benefit. Keep them textually close instead.

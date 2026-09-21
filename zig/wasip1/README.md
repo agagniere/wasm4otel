@@ -70,7 +70,7 @@ None of this is guaranteed by the plugin's target — it is the
 embedder's choice. A plugin running under a different host (or under
 `wasmtime` for tests) sees whatever that embedder configured, so don't
 treat real time and real entropy as properties of `wasm32-wasi`
-itself. See [`../../go/WAZERO.md`](../../go/WAZERO.md) for the full
+itself. See [`../../go/wazero/WAZERO.md`](../../go/wazero/WAZERO.md) for the full
 table.
 
 ## Memory ownership of OTLP structs — use an arena

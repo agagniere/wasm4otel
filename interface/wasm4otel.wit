@@ -1,0 +1,297 @@
+// wasm4otel plugin ABI, expressed in WIT.
+//
+// This is a declarative restatement of the ABI v2 contract that both
+// hosts implement imperatively (and that `docs/v2_plan.md`
+// specifies). Nothing consumes it yet: it is the design artifact for
+// the move to the Component Model, which wazy supports natively.
+//
+// The mapping to the core-wasm exports is deliberately 1:1 for now, so
+// the two can be reviewed side by side. `interface/README.md` records
+// where the mapping is forced, what the Component Model makes
+// unnecessary, and the open questions worth settling before this
+// becomes the source of truth.
+package wasm4otel:plugin@2.0.0;
+
+/// Types shared between the host imports and the guest exports.
+interface types {
+    /// Severity of a message handed to `host.log`.
+    ///
+    /// Core ABI: an i32 matching `go.uber.org/zap/zapcore.Level`
+    /// (debug = -1, info = 0, warn = 1, error = 2, fatal = 5). Naming
+    /// the levels removes the need for the guest to know zap's
+    /// numbering at all — `zig/src/log.zig`'s `LogLevel` enum exists
+    /// only to encode it.
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+        fatal,
+    }
+
+    /// An OTLP-encoded protobuf payload: `LogsData`, `MetricsData` or
+    /// `TracesData` depending on the signal it travels with.
+    ///
+    /// Still bytes rather than a modelled `resource-logs` record. The
+    /// pdata <-> WIT-record translation is a much larger change than
+    /// this file, and protobuf is what both sides already speak.
+    type otlp-payload = list<u8>;
+
+    /// Why the host could not accept a pushed batch.
+    ///
+    /// Core ABI: the non-zero i32 returned by `push_<signal>`. Code 1
+    /// ("host could not read the guest's memory") has no counterpart
+    /// here — under the Canonical ABI the payload arrives as an owned
+    /// `list<u8>` and the copy is the runtime's problem, so that class
+    /// of failure stops existing.
+    enum push-error {
+        /// The bytes did not decode as the expected OTLP message.
+        /// Core ABI code 2.
+        malformed-payload,
+        /// Nothing is wired downstream of this component. Core ABI
+        /// code 3 — the expected answer in the exporter role, where
+        /// the plugin is terminal.
+        no-consumer,
+        /// The next consumer in the pipeline rejected the batch.
+        /// Core ABI code 4.
+        consumer-rejected,
+    }
+
+    /// How an `interruptible-sleep` ended.
+    ///
+    /// Core ABI: 0 = elapsed, non-zero = interrupted.
+    enum sleep-outcome {
+        /// The full duration passed.
+        elapsed,
+        /// The host cancelled the component's context, i.e. shutdown
+        /// is underway and a receive loop should unwind.
+        interrupted,
+    }
+
+    /// Why a plugin refused to finish setting up.
+    ///
+    /// Core ABI: the non-zero i32 returned by `wasm4otel_setup`
+    /// (1 = failure, 2 = invalid-config).
+    enum setup-error {
+        /// Something went wrong that is not the operator's fault. The
+        /// plugin is expected to have logged the detail.
+        failed,
+        /// The `plugin_config` the operator wrote is not acceptable.
+        /// The host turns this into a boot-time error naming the
+        /// component.
+        invalid-config,
+    }
+
+    /// Why a plugin could not start, or why its receive loop stopped
+    /// early.
+    ///
+    /// Core ABI: the non-zero i32 returned by `wasm4otel_start` /
+    /// `wasm4otel_receive`. There is no invalid-config case: by this
+    /// point `setup` has already accepted the config.
+    enum run-error {
+        failed,
+    }
+}
+
+/// What the host provides to every plugin, in every role.
+///
+/// Core ABI: the `env` module. Names lose the snake_case and the
+/// module qualifier; the WIT interface name is what scopes them now.
+interface host {
+    use types.{log-level, otlp-payload, push-error, sleep-outcome};
+
+    /// Emit a message into the collector's own logger, tagged with the
+    /// plugin's path.
+    ///
+    /// Core ABI: `host_log(level: i32, ptr: u32, size: u32)`.
+    log: func(level: log-level, message: string);
+
+    /// Hand a batch to the next consumer in the pipeline. A processor
+    /// calls this from inside its `handle` to forward the batch it
+    /// transformed. An exporter is terminal and gets `no-consumer`.
+    ///
+    /// Core ABI: `push_logs(ptr: u32, size: u32) -> i32`.
+    push-logs: func(payload: otlp-payload) -> result<_, push-error>;
+
+    /// `push-logs` for the metrics signal.
+    push-metrics: func(payload: otlp-payload) -> result<_, push-error>;
+
+    /// `push-logs` for the traces signal.
+    push-traces: func(payload: otlp-payload) -> result<_, push-error>;
+
+    /// Sleep, waking early if the component is shutting down. This is
+    /// how a receive loop paces itself: a WASI sleep would not be
+    /// cancellable, which is why the host deliberately does not wire
+    /// `WithSysNanosleep`.
+    ///
+    /// Core ABI: `interruptible_sleep_ms(ms: u32) -> u32`.
+    interruptible-sleep: func(millis: u32) -> sleep-outcome;
+
+    /// Fetch the `plugin_config` map from the collector's YAML, as a
+    /// JSON document. `none` means the operator set no `plugin_config`.
+    ///
+    /// Core ABI: `get_config(ptr: u32, size: u32) -> u32`, called
+    /// twice — once with `(0, 0)` to learn the size, then again with a
+    /// guest buffer big enough to hold it. Returning a `string` makes
+    /// the probe-then-read dance, and the guest-side allocation it
+    /// needs, disappear.
+    get-config: func() -> option<string>;
+}
+
+/// The hooks every plugin implements, whatever its role.
+interface lifecycle {
+    use types.{setup-error, run-error};
+
+    /// Read and validate `plugin_config`. Runs inside the collector's
+    /// component-creation phase, so refusing here stops the collector
+    /// from finishing its boot — an operator's YAML mistake is
+    /// reported before any telemetry moves.
+    ///
+    /// Core ABI: `wasm4otel_setup() -> i32`.
+    setup: func() -> result<_, setup-error>;
+
+    /// Late initialisation, once the config is known good. Must return
+    /// promptly in every role — the pipeline is waiting on it. Long-
+    /// running work belongs in `receive-loop.run`.
+    ///
+    /// Core ABI: `wasm4otel_start() -> i32`.
+    start: func() -> result<_, run-error>;
+
+    /// Release whatever `setup` and `start` acquired. For a receiver,
+    /// the host has already cancelled the context and waited for
+    /// `receive-loop.run` to return before calling this.
+    ///
+    /// Core ABI: `wasm4otel_shutdown()`.
+    shutdown: func();
+}
+
+/// The receiver role: drive telemetry into the pipeline.
+interface receive-loop {
+    use types.{run-error};
+
+    /// Run until shutdown, pushing batches through `host.push-*`.
+    /// The host calls this on a dedicated goroutine after `start`
+    /// succeeds. Unwind when `host.interruptible-sleep` reports
+    /// `interrupted`.
+    ///
+    /// Receivers are signal-agnostic at the entry point — one loop
+    /// pushes whichever signals it produces — which is how OTLP and
+    /// the other multi-signal receivers in collector core work.
+    ///
+    /// Core ABI: `wasm4otel_receive() -> i32`.
+    run: func() -> result<_, run-error>;
+}
+
+/// The processor role on the logs signal: transform each batch and
+/// forward it via `host.push-logs`.
+///
+/// Core ABI: `wasm4otel_process_logs(ptr: u32, size: u32) -> i32`,
+/// preceded by `wasm4otel_alloc` and followed by `wasm4otel_free`.
+/// Under the Canonical ABI the payload arrives owned and the
+/// allocator exports stop being part of the contract.
+interface process-logs {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+/// `process-logs` for the metrics signal.
+interface process-metrics {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+/// `process-logs` for the traces signal.
+interface process-traces {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+/// The exporter role on the logs signal: terminally consume each
+/// batch. Separate from `process-logs` so the plugin's own interface
+/// list states which roles it was built for, rather than the host
+/// inferring it.
+///
+/// Core ABI: `wasm4otel_export_logs(ptr: u32, size: u32) -> i32`.
+interface export-logs {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+/// `export-logs` for the metrics signal.
+interface export-metrics {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+/// `export-logs` for the traces signal.
+interface export-traces {
+    use types.{otlp-payload, run-error};
+    handle: func(payload: otlp-payload) -> result<_, run-error>;
+}
+
+// One world per (role, signal) pair, mirroring the fact that the host
+// builds one Component per (mode, signal) and only ever calls one
+// batch export on it. Declaring the world *is* the role
+// disambiguation that ABI v2 gets by sniffing the export table — a
+// plugin built against `logs-processor` cannot be mistaken for a
+// receiver, and the mismatch is caught when the component is linked
+// rather than when the collector boots.
+
+/// A plugin that drives its own loop and pushes telemetry.
+world receiver {
+    import host;
+    export lifecycle;
+    export receive-loop;
+}
+
+/// A plugin that transforms log batches in place in the pipeline.
+world logs-processor {
+    import host;
+    export lifecycle;
+    export process-logs;
+}
+
+/// A plugin that transforms metric batches.
+world metrics-processor {
+    import host;
+    export lifecycle;
+    export process-metrics;
+}
+
+/// A plugin that transforms trace batches.
+world traces-processor {
+    import host;
+    export lifecycle;
+    export process-traces;
+}
+
+/// A plugin that terminally consumes log batches.
+world logs-exporter {
+    import host;
+    export lifecycle;
+    export export-logs;
+}
+
+/// A plugin that terminally consumes metric batches.
+world metrics-exporter {
+    import host;
+    export lifecycle;
+    export export-metrics;
+}
+
+/// A plugin that terminally consumes trace batches.
+world traces-exporter {
+    import host;
+    export lifecycle;
+    export export-traces;
+}
+
+/// A plugin deployable in several pipeline sections at once. ABI v2's
+/// role checks are additive precisely so this is legal: one .wasm may
+/// serve as a receiver, a logs processor and a metrics exporter, each
+/// as its own host-side instance playing exactly one role.
+world multi-role {
+    include receiver;
+    include logs-processor;
+    include metrics-exporter;
+}
