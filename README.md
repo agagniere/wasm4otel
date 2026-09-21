@@ -267,8 +267,6 @@ For what each side of *this* project supports:
   components down to wasip1 plugins.
 - Share a single runtime across all `Component` instances instead of
   one runtime per plugin.
-- Port the ABI conformance tests from [`go/wazy`](go/wazy/README.md)
-  to the wazero host, which has none.
 
 ## Acknowledgements
 
