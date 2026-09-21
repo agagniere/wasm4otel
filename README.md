@@ -152,11 +152,18 @@ There are two interchangeable host modules:
 `github.com/agagniere/wasm4otel/go/wazy`, which provides the same three
 factories on [wazy](https://github.com/samyfodil/wazy) — a wazero fork
 with native WASI 0.2 / Component Model support. Both speak the same
-plugin ABI, so the same `.wasm` runs under either. Import one, not
-both.
+plugin ABI, so the same `.wasm` runs under either.
 
-Each factory uses the type name `wasm4otel`; the YAML disambiguates
-them by which pipeline section the entry appears under:
+They use **different** component type names — `wasm4otel` for the
+wazero host, `wasm4otel_wazy` for the wazy one — so a distribution can
+link both and run them side by side in different pipelines. That is
+what makes the two comparable on a real workload rather than on a
+benchmark. Most builds want only the wazero one; linking both costs a
+second wasm runtime in the binary (~3.6 MB) and pulls in the fork's
+supply chain.
+
+Within one host, the YAML disambiguates the three roles by which
+pipeline section the entry appears under:
 
 ```yaml
 receivers:

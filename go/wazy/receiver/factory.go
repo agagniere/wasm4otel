@@ -23,7 +23,7 @@ import (
 // instrumentation off — see Component.pushLogs.
 func NewFactory() otel_receiver.Factory {
 	return otel_receiver.NewFactory(
-		otel_component.MustNewType("wasm4otel"),
+		wasm4otel.ComponentType,
 		wasm4otel.DefaultConfig,
 		otel_receiver.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
 		otel_receiver.WithMetrics(createMetrics, otel_component.StabilityLevelDevelopment),

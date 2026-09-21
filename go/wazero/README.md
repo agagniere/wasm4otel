@@ -53,7 +53,9 @@ wasm4otelprocessor.NewFactory() // processor.Factory
 wasm4otelexporter.NewFactory()  // exporter.Factory
 ```
 
-All three use the type name `wasm4otel`; the YAML section
+All three use this module's type name, `wasm4otel` (the
+[`go/wazy`](../wazy/README.md) host uses `wasm4otel_wazy`, so both can
+be linked into one collector); the YAML section
 (`receivers:`/`processors:`/`exporters:`) decides the role. Each
 factory registers all three signals — logs, metrics and traces — at
 stability level `development`. Registering a signal is not a promise
@@ -125,6 +127,10 @@ exporters:
 ```
 
 ## Configuration
+
+`wasm4otel` is this host's component type name; the
+[`go/wazy`](../wazy/README.md) host registers as `wasm4otel_wazy` and
+takes the identical options, so the two can coexist in one collector.
 
 ```yaml
 receivers:

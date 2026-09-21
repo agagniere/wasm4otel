@@ -23,7 +23,7 @@ import (
 // inside the guest, and each call gets an exporter/<id>/<signal> span.
 func NewFactory() otel_exporter.Factory {
 	return otel_exporter.NewFactory(
-		otel_component.MustNewType("wasm4otel"),
+		wasm4otel.ComponentType,
 		wasm4otel.DefaultConfig,
 		otel_exporter.WithLogs(createLogs, otel_component.StabilityLevelDevelopment),
 		otel_exporter.WithMetrics(createMetrics, otel_component.StabilityLevelDevelopment),

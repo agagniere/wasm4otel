@@ -9,8 +9,22 @@ built on [wazy](https://github.com/samyfodil/wazy) instead of
 same plugin ABI, so the same plugin runs under either without a
 rebuild.
 
-The two are separate Go modules and a collector build should import
-**one** of them. Nothing shares code between them: `component.go` is
+The two are separate Go modules. Most builds want only the wazero
+one, but they carry different component type names — this module
+registers as **`wasm4otel_wazy`**, the wazero module as `wasm4otel` —
+so a distribution can link both and run them in different pipelines of
+the same collector. Everything else about the config is identical, so
+moving a component between hosts is a one-word edit:
+
+```yaml
+receivers:
+  wasm4otel:        # the wazero host
+    path: /path/to/plugin.wasm
+  wasm4otel_wazy:   # the wazy host, same plugin, same options
+    path: /path/to/plugin.wasm
+```
+
+Nothing shares code between them: `component.go` is
 duplicated on purpose, and kept line-for-line close to
 [`../wazero/component.go`](../wazero/component.go) so `diff` shows only
 the runtime-specific parts. Read the
@@ -41,6 +55,13 @@ the right shape?", and it means this module can be swapped in and the
 existing plugins keep working.
 
 ## What differs from the wazero host
+
+### Component type name
+
+`wasm4otel_wazy` rather than `wasm4otel`, exported as
+`wasm4otel.ComponentType` and used by all three factories. This is the
+only identifier deliberately not shared: two factories claiming one
+type name would collide at startup in a collector that linked both.
 
 Four things, all in `component.go`:
 

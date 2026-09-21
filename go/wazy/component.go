@@ -28,6 +28,20 @@ import (
 	"github.com/samyfodil/wazy/imports/wasi_snapshot_preview1"
 )
 
+// ComponentType is the name operators write under `receivers:`,
+// `processors:` and `exporters:` in the collector YAML, and the one
+// identifier that is deliberately *not* shared with the other host.
+// The two modules are otherwise interchangeable, so a distribution
+// that links both would register two factories claiming the same type
+// and fail at startup. Giving each its own name lets one collector
+// carry both and run them side by side in different pipelines —
+// which is the only way to compare them on a real workload.
+//
+// // The wazy host carries the suffix, since the wazero host holds the
+// plain name. A config moved between them changes only this word.
+
+var ComponentType = otel_component.MustNewType("wasm4otel_wazy")
+
 // ComponentMode selects the lifecycle a Component runs under. It is
 // supplied by the role-specific factory as a NewComponent argument.
 type ComponentMode uint8
