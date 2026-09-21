@@ -19,9 +19,10 @@ type PluginConfig map[string]interface{}
 type Engine string
 
 const (
-	// EngineInterpreter executes bytecode in pure Go. Slowest, but
-	// runs anywhere Go runs and needs no executable memory. The
-	// default.
+	// EngineInterpreter executes bytecode in pure Go. Slowest — at
+	// least an order of magnitude behind the compiler on our plugins —
+	// but runs anywhere Go runs and needs no executable memory. Ask
+	// for it explicitly to rule the compiler out.
 	EngineInterpreter Engine = "interpreter"
 
 	// EngineCompiler compiles each module to native code at load time.
@@ -33,7 +34,7 @@ const (
 
 	// EngineAuto lets wazero probe the platform and take the compiler
 	// where it works, the interpreter everywhere else. The portable
-	// way to ask for native speed.
+	// way to ask for native speed, and the default.
 	EngineAuto Engine = "auto"
 )
 
@@ -42,7 +43,7 @@ const (
 // names an engine.
 func (engine Engine) orDefault() Engine {
 	if engine == "" {
-		return EngineInterpreter
+		return EngineAuto
 	}
 	return engine
 }
@@ -76,6 +77,6 @@ func (cfg *Config) Validate() error {
 func DefaultConfig() component.Config {
 	return Config{
 		Path:   "",
-		Engine: EngineInterpreter,
+		Engine: EngineAuto,
 	}
 }
