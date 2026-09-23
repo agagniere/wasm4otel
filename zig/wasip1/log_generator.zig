@@ -23,6 +23,7 @@ extern fn push_logs(ptr: [*]const u8, size: usize) i32;
 // don't need it.
 comptime {
     @export(&init, .{ .name = "_initialize" });
+    @export(&start, .{ .name = "wasm4otel_start" });
     @export(&receive, .{ .name = "wasm4otel_receive" });
     @export(&shutdown, .{ .name = "wasm4otel_shutdown" });
 }
@@ -35,6 +36,9 @@ fn init() callconv(.{ .wasm_mvp = .{} }) void {
         build_info.version,
         builtin.zig_version_string,
     });
+}
+
+fn start() callconv(.{ .wasm_mvp = .{} }) void {
     std.log.info("Running on {t} {t} {t} {t}", .{
         builtin.cpu.arch,
         builtin.os.tag,
@@ -102,6 +106,8 @@ fn pushLogs(alloc: Allocator, logs: LogsBatch) !void {
     _ = pushSerializedLogs(writer.buffered());
 }
 
+const levels = [_][]const u8{ "info", "FATAL", "Error", "debug", "Warn", "trace" };
+
 fn generateLogs(alloc: Allocator, io: Io) !LogsBatch {
     var batch: LogsBatch = .{};
 
@@ -120,7 +126,7 @@ fn generateLogs(alloc: Allocator, io: Io) !LogsBatch {
         const log: otelData.Logs.LogRecord = .{
             .time_unix_nano = now,
             .observed_time_unix_nano = now,
-            .severity_number = @enumFromInt((i % 6) * 4 + 1),
+            .severity_text = levels[i % levels.len],
             .body = .{ .value = .{ .string_value = "Hello from WebAssembly" } },
         };
         try logs_from_instance.log_records.append(alloc, log);
