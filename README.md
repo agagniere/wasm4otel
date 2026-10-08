@@ -132,9 +132,9 @@ Collector distribution (e.g. via
 
 ```go
 import (
-    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/wazero/receiver"
-    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/wazero/processor"
-    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/wazero/exporter"
+    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/wazy/receiver"
+    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/wazy/processor"
+    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/wazy/exporter"
 )
 
 // add the factories your distribution needs
@@ -143,24 +143,27 @@ wasm4otelprocessor.NewFactory()
 wasm4otelexporter.NewFactory()
 ```
 
-[`go/wazero/README.md`](go/wazero/README.md#adding-the-components-to-an-ocb-manifest)
+[`go/wazy/README.md`](go/wazy/README.md#adding-the-components-to-an-ocb-manifest)
 has a builder manifest wiring all three, and the two fields you have
 to spell out because they share one Go module.
 
 There are two interchangeable host modules:
-`github.com/agagniere/wasm4otel/go/wazero` (above) and
-`github.com/agagniere/wasm4otel/go/wazy`, which provides the same three
-factories on [wazy](https://github.com/samyfodil/wazy) — a wazero fork
-with native WASI 0.2 / Component Model support. Both speak the same
+`github.com/agagniere/wasm4otel/go/wazy` (above, the default) on
+[wazy](https://github.com/samyfodil/wazy) — a wazero fork with native
+WASI 0.2 / Component Model support — and
+`github.com/agagniere/wasm4otel/go/wazero` on upstream
+[wazero](https://github.com/tetratelabs/wazero). Both speak the same
 plugin ABI, so the same `.wasm` runs under either.
 
-They use **different** component type names — `wasm4otel` for the
-wazero host, `wasm4otel_wazy` for the wazy one — so a distribution can
+They use **different** component type names — `wasm4otel` for the wazy
+host, `wasm4otel_wazero` for the wazero one — so a distribution can
 link both and run them side by side in different pipelines. That is
 what makes the two comparable on a real workload rather than on a
-benchmark. Most builds want only the wazero one; linking both costs a
-second wasm runtime in the binary (~3.6 MB) and pulls in the fork's
-supply chain.
+benchmark. Most builds want only one: linking both costs a second wasm
+runtime in the binary (~3.6 MB). `wasm4otel` is the default because
+wazy is where the Component Model work is going; if you would rather
+run the upstream runtime — it is the more actively maintained of the
+two — link `go/wazero` and write `wasm4otel_wazero` in the YAML.
 
 Within one host, the YAML disambiguates the three roles by which
 pipeline section the entry appears under:

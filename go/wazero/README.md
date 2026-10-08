@@ -8,8 +8,11 @@ plugin via [wazero](https://github.com/tetratelabs/wazero) and route
 telemetry through the pipeline. The shared `Component` type lives in
 the root package and the three role factories live in subpackages.
 
-It is the reference host. [`go/wazy`](../wazy/README.md) is a sibling
-module offering the same three factories on
+This README is the full reference for both hosts — ABI, config
+schema, lifecycle, host imports — but the module it documents is not
+the default one: [`go/wazy`](../wazy/README.md) holds the plain
+`wasm4otel` type name. It is a sibling module offering the same three
+factories on
 [wazy](https://github.com/samyfodil/wazy), a wazero fork with native
 WASI 0.2 / Component Model support; the two speak the same plugin ABI
 and a collector build imports one of them, not both.
@@ -53,9 +56,9 @@ wasm4otelprocessor.NewFactory() // processor.Factory
 wasm4otelexporter.NewFactory()  // exporter.Factory
 ```
 
-All three use this module's type name, `wasm4otel` (the
-[`go/wazy`](../wazy/README.md) host uses `wasm4otel_wazy`, so both can
-be linked into one collector); the YAML section
+All three use this module's type name, `wasm4otel_wazero` (the
+[`go/wazy`](../wazy/README.md) host holds the plain `wasm4otel`, so
+both can be linked into one collector); the YAML section
 (`receivers:`/`processors:`/`exporters:`) decides the role. Each
 factory registers all three signals — logs, metrics and traces — at
 stability level `development`. Registering a signal is not a promise
@@ -104,8 +107,12 @@ three factories ship in a single Go module:
   would give `receiver`, `processor` and `exporter`. `ocb` uses it as
   the import alias in the very file where it also imports the
   collector's own `receiver` / `processor` / `exporter` packages, so
-  the default collides and the distribution won't compile. Use the Go
-  package names.
+  the default collides and the distribution won't compile. Spell it
+  `wasm4otel_<runtime>_<role>` — the runtime segment keeps this host's
+  aliases distinct from [`go/wazy`](../wazy/README.md)'s. Note this is
+  only a Go identifier in a generated file: it has nothing to do with
+  `wasm4otel_wazero`, the component type name operators write in the
+  collector YAML.
 
 A manifest snippet wiring up all three roles:
 
@@ -113,28 +120,34 @@ A manifest snippet wiring up all three roles:
 receivers:
   - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
     import: github.com/agagniere/wasm4otel/go/wazero/receiver
-    name: wasm4otel_receiver
+    name: wasm4otel_wazero_receiver
 
 processors:
   - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
     import: github.com/agagniere/wasm4otel/go/wazero/processor
-    name: wasm4otel_processor
+    name: wasm4otel_wazero_processor
 
 exporters:
   - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
     import: github.com/agagniere/wasm4otel/go/wazero/exporter
-    name: wasm4otel_exporter
+    name: wasm4otel_wazero_exporter
 ```
+
+That gets you the `wasm4otel_wazero` components. The default host has
+the same section in
+[`../wazy/README.md`](../wazy/README.md#adding-the-components-to-an-ocb-manifest).
 
 ## Configuration
 
-`wasm4otel` is this host's component type name; the
-[`go/wazy`](../wazy/README.md) host registers as `wasm4otel_wazy` and
-takes the identical options, so the two can coexist in one collector.
+`wasm4otel_wazero` is this host's component type name. The
+[`go/wazy`](../wazy/README.md) host is the default one and holds the
+plain `wasm4otel`; it takes the identical options, so the two can
+coexist in one collector and a config moves between them by editing
+that one word.
 
 ```yaml
 receivers:
-  wasm4otel:
+  wasm4otel_wazero:
     path: /path/to/plugin.wasm   # required
     runtime:                     # optional
       mode: auto                 # auto | interpreter | compiled

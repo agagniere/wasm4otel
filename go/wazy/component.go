@@ -37,10 +37,10 @@ import (
 // carry both and run them side by side in different pipelines —
 // which is the only way to compare them on a real workload.
 //
-// // The wazy host carries the suffix, since the wazero host holds the
-// plain name. A config moved between them changes only this word.
-
-var ComponentType = otel_component.MustNewType("wasm4otel_wazy")
+// This is the plain name, because wazy is the default runtime here: a
+// config that doesn't care which host runs it gets this one. A config
+// moved between the two changes only this word.
+var ComponentType = otel_component.MustNewType("wasm4otel")
 
 // ComponentMode selects the lifecycle a Component runs under. It is
 // supplied by the role-specific factory as a NewComponent argument.
