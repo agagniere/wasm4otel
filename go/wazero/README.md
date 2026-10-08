@@ -118,17 +118,17 @@ A manifest snippet wiring up all three roles:
 
 ```yaml
 receivers:
-  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazero/receiver
     name: wasm4otel_wazero_receiver
 
 processors:
-  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazero/processor
     name: wasm4otel_wazero_processor
 
 exporters:
-  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazero v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazero/exporter
     name: wasm4otel_wazero_exporter
 ```
