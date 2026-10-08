@@ -131,17 +131,17 @@ manifest:
 
 ```yaml
 receivers:
-  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazy/receiver
     name: wasm4otel_wazy_receiver
 
 processors:
-  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazy/processor
     name: wasm4otel_wazy_processor
 
 exporters:
-  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.1.0
     import: github.com/agagniere/wasm4otel/go/wazy/exporter
     name: wasm4otel_wazy_exporter
 ```
