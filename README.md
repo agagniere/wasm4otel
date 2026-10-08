@@ -125,45 +125,46 @@ generates the OTLP types into `zig/src/opentelemetry/`.
 
 ### Use it from a collector
 
-`wasm4otel` ships the host as a Go module — to actually run it,
-register the factory of whichever role you need in an OpenTelemetry
-Collector distribution (e.g. via
-[`ocb`](https://opentelemetry.io/docs/collector/custom-collector/)):
+Add the components you need to an
+[`ocb`](https://opentelemetry.io/docs/collector/custom-collector/)
+manifest:
 
-```go
-import (
-    wasm4otelreceiver  "github.com/agagniere/wasm4otel/go/wazy/receiver"
-    wasm4otelprocessor "github.com/agagniere/wasm4otel/go/wazy/processor"
-    wasm4otelexporter  "github.com/agagniere/wasm4otel/go/wazy/exporter"
-)
+```yaml
+receivers:
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazy/receiver
+    name: wasm4otel_wazy_receiver
 
-// add the factories your distribution needs
-wasm4otelreceiver.NewFactory()
-wasm4otelprocessor.NewFactory()
-wasm4otelexporter.NewFactory()
+processors:
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazy/processor
+    name: wasm4otel_wazy_processor
+
+exporters:
+  - gomod: github.com/agagniere/wasm4otel/go/wazy v0.0.1
+    import: github.com/agagniere/wasm4otel/go/wazy/exporter
+    name: wasm4otel_wazy_exporter
 ```
 
+List only the roles you need.
 [`go/wazy/README.md`](go/wazy/README.md#adding-the-components-to-an-ocb-manifest)
-has a builder manifest wiring all three, and the two fields you have
-to spell out because they share one Go module.
+covers the `import` and `name` fields.
 
-There are two interchangeable host modules:
-`github.com/agagniere/wasm4otel/go/wazy` (above, the default) on
-[wazy](https://github.com/samyfodil/wazy) — a wazero fork with native
-WASI 0.2 / Component Model support — and
-`github.com/agagniere/wasm4otel/go/wazero` on upstream
-[wazero](https://github.com/tetratelabs/wazero). Both speak the same
-plugin ABI, so the same `.wasm` runs under either.
+#### Choosing the runtime
 
-They use **different** component type names — `wasm4otel` for the wazy
-host, `wasm4otel_wazero` for the wazero one — so a distribution can
-link both and run them side by side in different pipelines. That is
-what makes the two comparable on a real workload rather than on a
-benchmark. Most builds want only one: linking both costs a second wasm
-runtime in the binary (~3.6 MB). `wasm4otel` is the default because
-wazy is where the Component Model work is going; if you would rather
-run the upstream runtime — it is the more actively maintained of the
-two — link `go/wazero` and write `wasm4otel_wazero` in the YAML.
+That manifest picks a wasm runtime. There are two interchangeable host
+modules speaking the same plugin ABI, so the same `.wasm` runs under
+either: `go/wazy` on [wazy](https://github.com/samyfodil/wazy) — a
+wazero fork with native WASI 0.2 / Component Model support, the
+default, registered as **`wasm4otel`** — and `go/wazero` on upstream
+[wazero](https://github.com/tetratelabs/wazero), the more actively
+maintained of the two, registered as **`wasm4otel_wazero`**. To run
+upstream instead, swap `wazy` for `wazero` throughout the manifest
+above and write `wasm4otel_wazero` in the YAML below. The names differ
+so a distribution *can* link both and run them in separate pipelines,
+at the cost of a second runtime in the binary (~3.6 MB).
+
+#### Wiring a pipeline
 
 Within one host, the YAML disambiguates the three roles by which
 pipeline section the entry appears under:
@@ -246,13 +247,14 @@ For a refresher on the underlying tech:
 
 For what each side of *this* project supports:
 
-- [`go/wazero/README.md`](go/wazero/README.md) — the reference host
-  package: public API, config, lifecycle, host imports / guest
-  exports.
+- [`go/wazero/README.md`](go/wazero/README.md) — the full host
+  reference, covering both modules: public API, config, lifecycle,
+  host imports / guest exports.
 - [`go/wazero/WAZERO.md`](go/wazero/WAZERO.md) — wazero's feature
   matrix and what it means for plugins this collector can load.
-- [`go/wazy/README.md`](go/wazy/README.md) — the wazy host: why a
-  second runtime, and the four places it differs from the wazero one.
+- [`go/wazy/README.md`](go/wazy/README.md) — the default host: why
+  wazy, its `ocb` manifest, and the four places it differs from the
+  wazero one.
 - [`interface/README.md`](interface/README.md) — the plugin ABI
   restated as WIT, what the Component Model deletes, and the open
   questions before it becomes the source of truth.
