@@ -2,12 +2,12 @@ package wasm4otel
 
 import (
 	std_context "context"
+	std_rand "crypto/rand"
+	std_json "encoding/json"
 	std_errors "errors"
 	std_fmt "fmt"
 	std_io "io"
-	std_json "encoding/json"
 	std_os "os"
-	std_rand "crypto/rand"
 	std_sync "sync"
 	std_time "time"
 
@@ -18,14 +18,14 @@ import (
 	otel_consumer "go.opentelemetry.io/collector/consumer"
 	otel_logs "go.opentelemetry.io/collector/pdata/plog"
 	otel_metrics "go.opentelemetry.io/collector/pdata/pmetric"
+	otel_traces "go.opentelemetry.io/collector/pdata/ptrace"
 	otel_receiver "go.opentelemetry.io/collector/receiver"
 	otel_receiverhelper "go.opentelemetry.io/collector/receiver/receiverhelper"
-	otel_traces "go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/samyfodil/wazy"
 	wazy_api "github.com/samyfodil/wazy/api"
-	wazy_sys "github.com/samyfodil/wazy/sys"
 	"github.com/samyfodil/wazy/imports/wasi_snapshot_preview1"
+	wazy_sys "github.com/samyfodil/wazy/sys"
 )
 
 // ComponentType is the name operators write under `receivers:`,
