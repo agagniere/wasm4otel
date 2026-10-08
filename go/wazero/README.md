@@ -371,8 +371,25 @@ hands the host a raw `[]uint64` operand stack plus the declared value
 types, and costs nothing beyond the call itself. This ABI crosses the
 boundary constantly — `get_config` at load, `host_log` whenever the
 plugin feels like it, a `push_<signal>` per batch — so the components
-use the stack path. On the conformance fixture a `ProcessLogs` round
-trip went from 1157 ns / 27 allocs to 426 ns / 20 allocs: 2.7x.
+use the stack path.
+
+What that is worth, measured on `full_plugin.wasm` in compiled mode
+(M4 Max, the two builds run alternately, median of 3):
+
+| records / batch | `WithFunc`          | `WithGoModuleFunction` |
+|-----------------|---------------------|------------------------|
+| 1               | 1608 ns, 27 allocs  | 652 ns, 20 allocs      |
+| 8               | 2745 ns, 51 allocs  | 1548 ns, 44 allocs     |
+| 64              | 9964 ns, 223 allocs | 8381 ns, 216 allocs    |
+
+The saving is per *crossing*, not per record — −7 allocs and −168 B
+every time, whatever the batch holds — and the collector hands the
+guest one `push_logs` per batch. So the ratio decays as batches grow:
+2.5x at one record, 1.2x at 64, and roughly 1% at the batch sizes a
+real pipeline runs. Read it as "a crossing costs ~1 µs less", not
+"the processor is 2.5x faster". The runtime mode barely matters,
+since the marshalling is Go code either way: the same pair under
+`interpreter` is 1749 ns vs 750 ns.
 
 The verbosity is packed into three helpers — `hostProc3`,
 `hostFunc2`, `hostFunc1`, one per arity this ABI uses — so the
