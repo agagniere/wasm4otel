@@ -22,6 +22,14 @@ check-hosts-in-sync:
 	    && echo "== conformance suite in sync" \
 	    || { echo "the two hosts' conformance suites have diverged; see the diff above" >&2; exit 1; }
 
+# The Rust host is a library, not a collector component, so it runs the
+# conformance fixtures through its own port of the suite rather than the
+# byte-identical Go file. Kept out of `test` so the Go hosts can still be
+# checked without a Rust toolchain.
+.PHONY: test-rust
+test-rust:
+	cd rust && cargo test && cargo clippy --all-targets -- -D warnings
+
 .PHONY: fixtures
 fixtures:
 	$(MAKE) -C go/testdata

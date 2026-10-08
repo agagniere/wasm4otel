@@ -1,0 +1,22 @@
+[package]
+name = "wasm4otel"
+version = "0.1.0"
+edition = "2024"
+description = "Embeddable wasmtime host for wasm4otel plugins (ABI v2)"
+license = "Apache-2.0"
+repository = "https://github.com/agagniere/wasm4otel"
+publish = false
+
+[dependencies]
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["macros", "sync", "time"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# `cranelift` compiles to native code; `pulley` is wasmtime's portable
+# interpreter, which Cranelift also targets. Keeping both is what lets
+# `RuntimeMode` mean the same thing as the Go hosts' `runtime.mode`.
+wasmtime = { version = "48", default-features = false, features = ["async", "cranelift", "pulley", "runtime", "std"] }
+# Only WASIp1: the Zig wasip1 plugins import `wasi_snapshot_preview1`.
+wasmtime-wasi = { version = "48", default-features = false, features = ["p1"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
